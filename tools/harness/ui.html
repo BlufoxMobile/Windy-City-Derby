@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<base href="/">
+<title>UI harness — Windy City Derby</title>
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}</script>
+<style>
+html,body{margin:0;height:100%;background:#05070d;overflow:hidden;overscroll-behavior:none;-webkit-user-select:none;user-select:none}
+#gl{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+#ui{position:fixed;inset:0;pointer-events:none}
+#hmenu{position:fixed;right:6px;bottom:6px;z-index:99;display:flex;flex-wrap:wrap;gap:4px;max-width:340px;justify-content:flex-end;font:11px system-ui}
+#hmenu button{padding:4px 6px;border:0;border-radius:4px;background:#fff3;color:#fff;cursor:pointer}
+</style>
+</head><body>
+<canvas id="gl"></canvas><div id="ui"></div>
+<script type="module">
+// UI harness: drives every screen of src/ui.js with fake data. No game, no three.js.
+//   ?screen=boot|title|name|character|park|intro|hud|callout|homer|bighomer|out|whiff|ball|strike|roundover|leaderboard|toast|settings
+//   &char=nova &noassets=1 &board=remote|offline|empty|slow &pb=1 &menu=1 &mode=daily
+import { createUI } from '/src/ui.js';
+import * as D from '/src/data.js';
+
+const Q = new URLSearchParams(location.search);
+const NOASSETS = Q.has('noassets');
+const log = (...a) => console.log(...a);
+
+// ---- CSS exactly like the build: inlined <style> so relative font URLs resolve against the page (<base href="/">)
+const css = await fetch('/src/ui.css').then(r => r.text());
+const st = document.createElement('style'); st.textContent = css; document.head.appendChild(st);
+
+// ---- tiny Assets shim (CONTRACT Assets interface): get / meta / texture
+async function loadAssets() {
+  const man = await fetch('/assets/manifest.json').then(r => r.json()).catch(() => ({}));
+  const entries = man.images || man;
+  const imgs = {}; const keys = Object.keys(entries).filter(k => entries[k] && entries[k].src);
+  await Promise.all(keys.map(k => new Promise(res => { const im = new Image(); im.onload = () => { imgs[k] = im; res(); }; im.onerror = () => res(); im.src = '/assets/' + entries[k].src; })));
+  return { get: k => (NOASSETS ? null : imgs[k] || null), meta: k => (NOASSETS ? null : entries[k] || null), texture: () => null, receipt: { loaded: Object.keys(imgs).length, failed: keys.length - Object.keys(imgs).length, total: keys.length, ms: 0 } };
+}
+const assets = await loadAssets();
+await document.fonts.ready.catch(() => {});
+
+// ---- fake "3D" batting view on the canvas (so HUD legibility is judged over a real-ish scene)
+function paintScene(parkId = 'wrigley', tod = 'dusk') {
+  const cv = document.getElementById('gl'); const dpr = 1; const W = cv.width = innerWidth * dpr, Hh = cv.height = innerHeight * dpr; const g = cv.getContext('2d');
+  const sky = assets.get(`sky_${parkId}_${tod}`); const hor = Hh * 0.40;
+  g.fillStyle = '#0b1636'; g.fillRect(0, 0, W, Hh);
+  if (sky) { const s = Math.max(W / sky.width, hor / (sky.height * 0.8)); const sw = sky.width * s, sh = sky.height * s; g.drawImage(sky, (W - sw) / 2, hor - sh * 0.8, sw, sh); }
+  // stands band
+  const crowd = assets.get(parkId === 'rate' ? 'tex_crowd_south' : 'tex_crowd_north');
+  if (crowd) { g.save(); g.globalAlpha = .9; const ch = Hh * 0.06; for (let x = 0; x < W; x += ch * crowd.width / crowd.height) g.drawImage(crowd, x, hor - ch, ch * crowd.width / crowd.height, ch); g.restore(); }
+  // wall
+  const ivy = assets.get(parkId === 'rate' ? 'tex_brick' : 'tex_ivy'); g.fillStyle = parkId === 'rate' ? '#1a1d22' : '#1f5a2a'; g.fillRect(0, hor, W, Hh * 0.018);
+  if (ivy) { g.save(); g.globalAlpha = .9; for (let x = 0; x < W; x += Hh * .018) g.drawImage(ivy, x, hor, Hh * .018, Hh * .018); g.restore(); }
+  // grass w/ mow stripes
+  const top = hor + Hh * 0.018; const gr = g.createLinearGradient(0, top, 0, Hh); gr.addColorStop(0, '#2a6b34'); gr.addColorStop(1, '#1f5a28'); g.fillStyle = gr; g.fillRect(0, top, W, Hh - top);
+  for (let i = 0; i < 12; i++) { g.fillStyle = i % 2 ? 'rgba(255,255,255,.035)' : 'rgba(0,0,0,.04)'; g.beginPath(); g.moveTo(W / 2 + (i - 6) * W * .02, top); g.lineTo(W / 2 + (i - 5) * W * .02, top); g.lineTo(W / 2 + (i - 5) * W * .5, Hh); g.lineTo(W / 2 + (i - 6) * W * .5, Hh); g.fill(); }
+  // infield dirt (perspective diamond)
+  const cx = W / 2, plateY = Hh * 0.80, moundY = Hh * 0.50; g.fillStyle = '#9a6a42';
+  g.beginPath(); g.moveTo(cx, Hh * 0.44); g.lineTo(cx + W * 0.62, Hh * 0.60); g.lineTo(cx, Hh * 1.02); g.lineTo(cx - W * 0.62, Hh * 0.60); g.closePath(); g.fill();
+  g.fillStyle = '#2d7236'; g.beginPath(); g.moveTo(cx, Hh * 0.475); g.lineTo(cx + W * 0.45, Hh * 0.60); g.lineTo(cx, Hh * 0.78); g.lineTo(cx - W * 0.45, Hh * 0.60); g.closePath(); g.fill();
+  g.fillStyle = '#a8764b'; g.beginPath(); g.ellipse(cx, moundY + Hh * .02, W * .07, Hh * .012, 0, 0, 7); g.fill();
+  g.fillStyle = '#fff'; g.beginPath(); g.moveTo(cx - 12, plateY); g.lineTo(cx + 12, plateY); g.lineTo(cx + 12, plateY + 5); g.lineTo(cx, plateY + 10); g.lineTo(cx - 12, plateY + 5); g.fill();
+  // pitcher + batter sprites (frame 0)
+  const pit = assets.get('pitcher'), pm = assets.meta('pitcher');
+  if (pit && pm) { const fh = Hh * 0.075, fw = fh * pm.fw / pm.fh; g.drawImage(pit, 0, 0, pm.fw, pm.fh, cx - fw * pm.anchor[0], moundY + Hh * .02 - fh * pm.anchor[1], fw, fh); }
+  const cid = Q.get('char') || 'nova'; const sw = assets.get('swing_' + cid), sm = assets.meta('swing_' + cid);
+  if (sw && sm) { const fh = Hh * 0.36, fw = fh * sm.fw / sm.fh; const lefty = D.CHAR_BY_ID[cid]?.bats === 'L';
+    g.save(); if (lefty) { g.translate(W, 0); g.scale(-1, 1); }
+    g.drawImage(sw, 0, 0, sm.fw, sm.fh, W * 0.34 - fw * sm.anchor[0], Hh * 0.93 - fh * sm.anchor[1], fw, fh); g.restore(); }
+}
+
+// ---- fake data
+const today = '2026-09-26';
+const daily = D.dailyConfig(today);
+const best = { score: 12450, homers: 9, longest: 468, charId: 'nova', parkId: 'wrigley', date: today };
+const NAMES = ['Imaad D', 'Juan C', 'Tanzim', 'Jacob C', 'M. Brooks', 'Jeff B', 'Amanda W', 'Rocco Fan 99', 'Kayla', 'DeShawn', 'Priya', 'Big Mike', 'Sofia R', 'Marcus', 'Lena', 'T-Bone', 'Ava K', 'Hector', 'Nina', 'Chris P'];
+function fakeRows(tab, district) {
+  let rows = NAMES.map((n, i) => ({ name: n, score: Math.round(16400 - i * 610 - (i * 37) % 200), homers: Math.max(1, 14 - Math.floor(i / 2)), longest: 512 - i * 6 - (i * 13) % 9, charId: D.CHARACTERS[i % 6].id, parkId: i % 3 ? 'wrigley' : 'rate', district: D.DISTRICTS[i % 5] }));
+  if (Q.get('board') === 'empty') rows = [];
+  if (district) rows = rows.filter(r => r.district === district);
+  if (tab === 'longest') rows.sort((a, b) => b.longest - a.longest);
+  if (tab === 'alltime') rows = rows.map(r => ({ ...r, score: r.score + 3100 }));
+  if (!district && tab === 'today' && Q.get('me') !== '0') rows.splice(3, 0, { name: 'Jeff', score: 14820, homers: 11, longest: 471, charId: 'rocco', parkId: 'wrigley', district: 'Big South' });
+  return rows.slice(0, 25).map((r, i) => ({ rank: i + 1, ...r }));
+}
+const offline = Q.get('board') === 'offline';
+const boardTop = ({ board, district }) => new Promise(res => setTimeout(() => res({ ok: true, remote: !offline, rows: fakeRows(board, district) }), Q.get('board') === 'slow' ? 60000 : 350));
+const summary = { score: 14820, homers: 11, longest: 471, outs: 10, pitches: 24, bestStreak: 4, charId: Q.get('char') || 'rocco', parkId: 'wrigley', mode: Q.get('mode') || 'free', date: today, avgDistance: 428, v: D.VERSION };
+const homerRes = { kind: 'homer', swung: true, timingErr: 0.004, timingLabel: 'PERFECT', quality: 0.96, contact: 'sweet', exitVelo: 111.4, launch: 29.2, spray: -24, distance: 452, hangTime: 5.8, bonus: 'street_l' };
+const homerAp = { scoreDelta: 1128, out: false, roundOver: false, streak: 2, mult: 1.5, callouts: [{ text: '452 FT', points: 452, kind: 'distance' }, { text: 'BACK-TO-BACK ×1.5', points: 226, kind: 'streak' }, { text: 'ON WAVELAND! +250', points: 250, kind: 'bonus', key: 'street_l' }, { text: 'MOONSHOT +100', points: 100, kind: 'moonshot' }, { text: 'NEW RECORD +250', points: 250, kind: 'record' }] };
+const smallHomerRes = { ...homerRes, distance: 388, exitVelo: 101.2, launch: 26, spray: 12, timingLabel: 'LATE', bonus: null };
+const smallHomerAp = { scoreDelta: 388, out: false, roundOver: false, streak: 1, mult: 1, callouts: [{ text: '388 FT', points: 388, kind: 'distance' }] };
+const outs = {
+  out: [{ kind: 'flyout', swung: true, timingLabel: 'EARLY', quality: .6, contact: 'under', exitVelo: 97.8, launch: 34, spray: -6, distance: 372 }, { scoreDelta: 0, out: true, streak: 0, mult: 1, callouts: [{ text: 'WARNING TRACK', points: 0, kind: 'out' }, { text: 'STREAK ENDS AT 3', points: 0, kind: 'streakEnd' }] }],
+  whiff: [{ kind: 'whiff', swung: true, timingLabel: 'WAY LATE', quality: 0, contact: 'miss', exitVelo: 0, launch: 0, spray: 0, distance: 0 }, { scoreDelta: 0, out: true, streak: 0, mult: 1, callouts: [{ text: 'SWING & MISS', points: 0, kind: 'out' }, { text: 'LAST OUT — CLUTCH ×1.5', points: 0, kind: 'info' }] }],
+  ball: [{ kind: 'ball', swung: false }, { scoreDelta: 0, out: false, streak: 2, mult: 1, callouts: [{ text: 'BALL', points: 0, kind: 'ball' }] }],
+  strike: [{ kind: 'strike', swung: false }, { scoreDelta: 0, out: true, streak: 0, mult: 1, callouts: [{ text: 'CALLED STRIKE', points: 0, kind: 'out' }] }],
+};
+const hudState = (o = {}) => ({ outs: 3, homers: 7, score: 9340, streak: 2, mult: 2, pitchN: 12, wind: daily.wind, name: 'Jeff', charId: H.char || Q.get('char') || 'nova', parkId: daily.parkId, mode: 'free', ...o });
+
+// ---- UI + a minimal fake game loop reacting to events
+const events = [];
+let ui;
+const onEvent = (type, p) => {
+  events.push([type, p]); if (type !== 'sfx') log('[event]', type, JSON.stringify(p));
+  if (Q.has('noreact')) return;
+  switch (type) {
+    case 'play': case 'daily': H.mode = type === 'daily' ? 'daily' : 'free'; return ui.nameEntry({ name: 'Jeff', district: 'Big South' });
+    case 'name': return ui.characterSelect({ selected: 'nova' });
+    case 'character': H.char = p.charId; return H.mode === 'daily' ? startIntro() : ui.parkSelect({ daily, selected: 'wrigley' });
+    case 'park': return startIntro(p.parkId);
+    case 'intro-done': ui.hud(hudState({ outs: 0, homers: 0, score: 0, streak: 0, mult: 1 })); setTimeout(() => { ui.armInput(true); ui.pitchCallout({ n: 1, type: 'meatball', label: 'MEATBALL', mph: 61 }); }, 400); return;
+    case 'swing': ui.armInput(false); return setTimeout(() => { ui.result(homerRes, homerAp, { ms: HOLD }); ui.hud(hudState({ outs: 0, homers: 1, score: 1128, streak: 1, mult: 1.5 })); }, 300);
+    case 'settings': return ui.settings({ sound: true, music: false, haptics: true, quality: 'auto' });
+    case 'board': case 'board-tab': return boardTop({ board: p.tab || 'today', district: p.district || '' }).then(d => ui.leaderboard(d, { tab: p.tab || 'today', district: p.district || '' }));
+    case 'again': return startIntro();
+    case 'change-fox': return ui.characterSelect({ selected: summary.charId });
+    case 'home': case 'back': return ui.title({ daily, best });
+  }
+};
+const H = window.H = { events, mode: Q.get('mode') || 'free', get ui() { return ui; } };
+ui = createUI(document.getElementById('ui'), { onEvent, assets, characters: D.CHARACTERS, parks: D.PARKS });
+function startIntro(parkId = daily.parkId) { paintScene(parkId, 'dusk'); ui.intro({ park: D.PARKS[parkId], conditions: { timeOfDay: daily.timeOfDay, weather: daily.weather, wind: daily.wind }, char: D.CHAR_BY_ID[H.char || Q.get('char') || 'nova'], mode: H.mode, daily: H.mode === 'daily' ? daily : null, hold: Number(Q.get('hold') || 3400) }); }
+
+const HOLD = Number(Q.get('hold') || 999999);
+const SCREENS = {
+  boot: () => ui.boot(0.62, 'LOADING PORTRAIT ROCCO'),
+  title: () => ui.title({ daily, best }),
+  name: () => { ui.nameEntry({ name: Q.get('name') ?? 'Jeff', district: 'Big South' }); },
+  character: () => ui.characterSelect({ selected: Q.get('char') || 'nova' }),
+  park: () => ui.parkSelect({ daily, selected: null }),
+  intro: () => { Q.set('hold', String(HOLD)); startIntro(); },
+  hud: () => { paintScene(daily.parkId); ui.hud(hudState()); ui.aim(Number(Q.get('aim') || -0.55)); ui.armInput(true); },
+  callout: () => { paintScene(daily.parkId); ui.hud(hudState({ outs: 9, streak: 0, mult: 1 })); ui.armInput(true); ui.aim(0.2); ui.pitchCallout({ n: 18, type: 'curveball', label: 'CURVEBALL', mph: 77.6 }, { ms: HOLD }); },
+  homer: () => { paintScene(daily.parkId); ui.hud(hudState({ outs: 3, homers: 6, score: 8212, streak: 0 })); ui.result(smallHomerRes, smallHomerAp, { ms: HOLD }); ui.hud(hudState({ outs: 3, homers: 7, score: 8600, streak: 1, mult: 1.5 })); },
+  bighomer: () => { paintScene(daily.parkId); ui.hud(hudState({ outs: 3, homers: 6, score: 8212, streak: 1 })); ui.result(homerRes, homerAp, { ms: HOLD }); ui.hud(hudState({ outs: 3, homers: 7, score: 9340, streak: 2, mult: 2 })); },
+  out: () => { paintScene(daily.parkId); ui.hud(hudState({ outs: 3, streak: 3 })); ui.result(...outs.out, { ms: HOLD }); ui.hud(hudState({ outs: 4, streak: 0, mult: 1 })); },
+  whiff: () => { paintScene(daily.parkId); ui.hud(hudState({ outs: 8, streak: 0 })); ui.result(...outs.whiff, { ms: HOLD }); ui.hud(hudState({ outs: 9, streak: 0, mult: 1 })); },
+  ball: () => { paintScene(daily.parkId); ui.hud(hudState({ outs: 5 })); ui.result(...outs.ball, { ms: HOLD }); ui.hud(hudState({ outs: 5 })); },
+  strike: () => { paintScene(daily.parkId); ui.hud(hudState({ outs: 5, streak: 0 })); ui.result(...outs.strike, { ms: HOLD }); ui.hud(hudState({ outs: 6, streak: 0, mult: 1 })); },
+  roundover: () => { paintScene(daily.parkId); ui.roundOver(summary, { submitting: new Promise(r => setTimeout(() => r(offline ? { ok: true, remote: false, rank: null } : { ok: true, remote: true, rank: 4 }), 700)), board: boardTop, name: Q.get('name') ?? 'Jeff', personalBest: Q.has('pb') ? true : undefined }); },
+  leaderboard: () => boardTop({ board: Q.get('tab') || 'today', district: Q.get('district') || '' }).then(d => ui.leaderboard(d, { tab: Q.get('tab') || 'today', district: Q.get('district') || '' })),
+  toast: () => { ui.title({ daily, best }); ui.toast('New personal best!', { kind: 'gold', ms: HOLD }); ui.toast('Leaderboard offline — score saved on this device', { ms: HOLD }); },
+  settings: () => { ui.title({ daily, best }); ui.settings({ sound: true, music: false, haptics: true, quality: 'medium' }); },
+};
+H.show = name => { (SCREENS[name] || SCREENS.title)(); return name; };
+H.SCREENS = Object.keys(SCREENS);
+H.show(Q.get('screen') || 'boot');
+if (!Q.get('screen')) { let p = 0; const iv = setInterval(() => { p += 0.2; ui.boot(Math.min(1, p), p >= 1 ? 'PLAY BALL' : 'LOADING ' + ['PORTRAITS', 'SKY', 'CROWD', 'PITCHER', 'SWINGS'][Math.floor(p * 5) % 5]); if (p >= 1) { clearInterval(iv); setTimeout(() => ui.title({ daily, best }), 400); } }, 300); }
+if (Q.has('menu')) {
+  const m = document.createElement('div'); m.id = 'hmenu';
+  m.innerHTML = Object.keys(SCREENS).map(k => `<button data-k="${k}">${k}</button>`).join('');
+  m.addEventListener('click', e => { const k = e.target.getAttribute('data-k'); if (k) { ui.hide(); ui.hideHud(); H.show(k); } });
+  document.body.appendChild(m);
+}
+window.__ready = true;
+</script>
+</body></html>

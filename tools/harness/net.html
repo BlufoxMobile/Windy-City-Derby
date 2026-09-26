@@ -1,0 +1,260 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NET harness — Windy City Derby</title>
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}</script>
+<style>
+  :root{--bg:#070b16;--panel:#0e1528;--ink:#e8eefc;--dim:#8a97b8;--ok:#3ddc84;--bad:#ff5a4f;--warn:#ffc83a;--acc:#35d0ff}
+  *{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.35 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{padding:14px 16px 10px;border-bottom:1px solid #1b2542;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  h1{margin:0;font-size:16px;letter-spacing:.08em}h1 b{color:var(--acc)}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;background:#18223f;color:var(--dim)}
+  .pill.ok{background:rgba(61,220,132,.15);color:var(--ok)}.pill.bad{background:rgba(255,90,79,.15);color:var(--bad)}.pill.run{background:rgba(255,200,58,.14);color:var(--warn)}
+  main{padding:10px 12px 20px;display:grid;gap:10px}
+  section{background:var(--panel);border:1px solid #1b2542;border-radius:10px;padding:10px 12px}
+  section h2{margin:0 0 6px;font-size:12px;letter-spacing:.1em;color:var(--dim);text-transform:uppercase}
+  ul{list-style:none;margin:0;padding:0}li{display:flex;gap:8px;padding:2px 0;border-bottom:1px dashed #19223d}li:last-child{border:0}
+  li .m{flex:0 0 38px;font-weight:700;font-size:11px}li.p .m{color:var(--ok)}li.f .m{color:var(--bad)}li.i .m{color:var(--acc)}
+  li .t{flex:1;word-break:break-word}
+  .bar{height:8px;border-radius:4px;background:#18223f;overflow:hidden;margin:6px 0}.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#2f7dff,#35d0ff)}
+  table{width:100%;border-collapse:collapse;font-size:11px}td,th{padding:2px 4px;text-align:left;border-bottom:1px solid #19223d}th{color:var(--dim);font-weight:600}
+  td.n{text-align:right;font-variant-numeric:tabular-nums}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.cell{background:#0a1020;border-radius:6px;padding:4px;text-align:center;font-size:10px;color:var(--dim)}
+  .cell canvas,.cell img{width:100%;height:auto;display:block;border-radius:4px;background:repeating-conic-gradient(#1a2340 0 25%,#111831 0 50%) 0 0/12px 12px}
+  #gl{width:100%;display:block;border-radius:6px}
+</style></head><body>
+<header><h1>NET <b>HARNESS</b></h1><span class="pill" id="suite">—</span><span class="pill run" id="status">running</span></header>
+<main id="main"></main>
+<script type="module">
+import { loadAssets } from '/src/assets.js';
+import { createBoard, sanitizeName } from '/src/net.js';
+import { chicagoDate } from '/src/data.js';
+
+const q = new URLSearchParams(location.search);
+const SUITE = q.get('suite') || 'net';
+const MOCK = q.get('mock') || 'http://localhost:8787';
+const $ = s => document.querySelector(s);
+document.getElementById('suite').textContent = SUITE + (q.get('throttle') ? ` · ${q.get('throttle')} kbps` : '');
+const R = { suite: SUITE, pass: 0, fail: 0, checks: [], info: {} };
+window.__result = R;
+
+function panel(title) { const s = document.createElement('section'); s.innerHTML = `<h2>${title}</h2><ul></ul>`; $('#main').appendChild(s); return s; }
+let cur = null;
+function line(kind, text) { if (!cur) cur = panel('checks'); const li = document.createElement('li'); li.className = kind; li.innerHTML = `<span class="m">${{ p: 'PASS', f: 'FAIL', i: 'INFO' }[kind]}</span><span class="t"></span>`; li.querySelector('.t').textContent = text; cur.querySelector('ul').appendChild(li); }
+function check(cond, text) { R.checks.push({ ok: !!cond, text }); cond ? R.pass++ : R.fail++; line(cond ? 'p' : 'f', text); return !!cond; }
+function info(text) { line('i', text); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const t0 = performance.now(); const secs = () => ((performance.now() - t0) / 1000).toFixed(1);
+const mock = p => fetch(MOCK + p).then(r => r.json());
+function clearLocal() { try { for (const k of Object.keys(localStorage)) if (k.startsWith('wcd-')) localStorage.removeItem(k); } catch { /* */ } }
+
+// ------------------------------------------------------------------ NET
+async function suiteNet() {
+  await mock('/__test/reset');
+  clearLocal();
+  const today = chicagoDate();
+  const S = (o = {}) => ({ score: 4200, homers: 6, longest: 452.4, outs: 10, pitches: 18, bestStreak: 3, charId: 'rocco', parkId: 'wrigley', mode: 'daily', date: today, avgDistance: 430, v: '1.0.0', name: 'Jeff B', district: 'north side', ...o });
+
+  cur = panel('online (mock = real worker.js)');
+  const A = createBoard({ endpoint: MOCK });
+  check(await A.ping() === true, 'ping() → true against the Worker');
+  let r = await A.submit(S());
+  check(r.ok && r.remote && r.rank === 1 && r.boards.today === 1 && r.boards.alltime === 1 && r.boards.longest === 1, `submit daily → ok, remote, rank 1 (${JSON.stringify(r)})`);
+  let t = await A.top({ board: 'today', date: today });
+  check(t.ok && t.remote && t.rows.length === 1 && t.rows[0].name === 'Jeff B' && t.rows[0].me === true && t.rows[0].longest === 452, `top(today) remote rows, own row flagged me (${JSON.stringify(t.rows[0])})`);
+  t = await A.top({ board: 'longest' }); check(t.remote && t.rows[0].longest === 452, 'top(longest) remote');
+  t = await A.top({ board: 'alltime', district: 'Big South' }); check(t.remote && t.rows.length === 0, 'district filter (other district → empty)');
+  t = await A.top({ board: 'alltime', district: 'North Side' }); check(t.remote && t.rows.length === 1 && t.rows[0].district === 'North Side', 'district normalized "north side" → "North Side"');
+  r = await A.submit(S({ name: 'J' }));
+  check(!r.ok && r.error === 'name' && A.pending() === 0, 'name too short → rejected client-side, not queued');
+  r = await A.submit(S({ name: 'Old Daily', date: '2020-01-01' }));
+  check(!r.ok && r.remote && /window/.test(r.error) && A.pending() === 0, `server validation reject → ok:false, NOT queued (${r.error})`);
+  check(sanitizeName("  Zoë  O'Neil!!  ") === "Zoe O'Neil", 'sanitizeName matches worker rules');
+
+  cur = panel('offline / captive portal / timeout → queue');
+  const B = createBoard({ endpoint: 'http://localhost:8799' });
+  let t1 = performance.now();
+  check(await B.ping() === false, 'ping() → false when the Worker is unreachable');
+  r = await B.submit(S({ name: 'Offline Olly', score: 3000, mode: 'free' }));
+  check(r.ok && !r.remote && r.queued && r.rank === 3 && r.boards.alltime === 3 && B.pending() === 1, `unreachable → ok, remote:false, queued, LOCAL rank 3 (behind 2 earlier local rounds) (${JSON.stringify(r)})`);
+  t = await B.top({ board: 'alltime' });
+  check(t.ok && t.remote === false && t.rows.some(x => x.name === 'Offline Olly') && t.rows.some(x => x.name === 'Jeff B'), `top() falls back to LOCAL rows (remote:false): ${t.rows.map(x => x.rank + '.' + x.name).join(', ')}`);
+  info(`offline round-trip ${(performance.now() - t1).toFixed(0)} ms`);
+
+  const C = createBoard({ endpoint: MOCK + '/__test/portal' });
+  check(await C.ping() === false, 'captive portal (200 text/html) → ping false');
+  r = await C.submit(S({ name: 'Portal Pat', score: 2500, mode: 'free', district: 'Big South' }));
+  check(r.ok && !r.remote && r.queued && r.error === 'non-json' && C.pending() === 2, `captive portal HTML → retryable "non-json", queued (${r.error})`);
+
+  const H = createBoard({ endpoint: MOCK + '/__test/hang' });
+  t1 = performance.now();
+  r = await H.submit(S({ name: 'Hang Hank', score: 2000, mode: 'free' }));
+  const el = performance.now() - t1;
+  check(r.queued && r.error === 'timeout' && el > 4500 && el < 7000 && H.pending() === 3, `hung endpoint → 5 s timeout (${(el / 1000).toFixed(2)} s), queued`);
+
+  cur = panel('reconnect → queue flush on createBoard');
+  const D = createBoard({ endpoint: MOCK, flushDelayMs: 0 });
+  t1 = performance.now();
+  while (D.pending() > 0 && performance.now() - t1 < 8000) await sleep(100);
+  check(D.pending() === 0, `queue flushed automatically by createBoard (${(performance.now() - t1).toFixed(0)} ms)`);
+  const raw = await fetch(MOCK + '/top?board=alltime&limit=10').then(x => x.json());
+  const names = raw.rows.map(x => x.name);
+  check(['Offline Olly', 'Portal Pat', 'Hang Hank', 'Jeff B'].every(n => names.includes(n)), `server now has the queued rounds: ${raw.rows.map(x => x.rank + '.' + x.name + ' ' + x.score).join(', ')}`);
+  const st = await mock('/__test/stats'); info(`KV writes so far: ${st.writes} · boards ${JSON.stringify(st.boards)}`);
+
+  cur = panel('KV eventual consistency (stale /top after submit)');
+  await mock('/__test/lag?ms=30000');
+  r = await D.submit(S({ score: 9100, homers: 9, longest: 471, mode: 'free' }));
+  check(r.ok && r.remote && r.rank === 1, `new best submitted → rank ${r.rank}, improved ${JSON.stringify(r.improved)}`);
+  const stale = await fetch(MOCK + '/top?board=alltime&limit=10').then(x => x.json());
+  const staleJeff = stale.rows.find(x => x.name === 'Jeff B');
+  info(`raw Worker /top (lagging KV) still says Jeff B = ${staleJeff && staleJeff.score}`);
+  t = await D.top({ board: 'alltime' });
+  check(t.remote && t.rows[0].name === 'Jeff B' && t.rows[0].score === 9100 && t.rows[0].me && t.rows[0].rank === 1, `client patches own fresh row into remote rows: ${t.rows.map(x => x.rank + '.' + x.name + ' ' + x.score).join(', ')}`);
+  await mock('/__test/lag?ms=0');
+
+  cur = panel('local bests + storage failures');
+  const best = D.local.best(); const bw = D.local.best('wrigley'); const hist = D.local.history();
+  check(best.score === 9100 && best.longest === 471 && bw.longest === 471 && best.rounds >= 5 && hist.length >= 5 && hist[0].score === 9100, `local.best() ${JSON.stringify({ score: best.score, longest: best.longest, rounds: best.rounds })}; best('wrigley').longest=${bw.longest}; history ${hist.length}`);
+  check(D.local.best('rate').longest === 0, "best('rate') → zeros when never played");
+  const gi = Storage.prototype.getItem, si = Storage.prototype.setItem;
+  Storage.prototype.getItem = () => { throw new Error('SecurityError'); }; Storage.prototype.setItem = () => { throw new Error('QuotaExceeded'); };
+  let threw = false;
+  try { const E = createBoard({ endpoint: 'http://localhost:8799' }); r = await E.submit(S({ name: 'No Storage', mode: 'free' })); t = await E.top({ board: 'alltime' }); E.local.best(); E.local.history(); }
+  catch (e) { threw = e; }
+  Storage.prototype.getItem = gi; Storage.prototype.setItem = si;
+  check(!threw && r.ok && t.ok, `localStorage throwing everywhere → still works (in-memory) ${threw ? threw : ''}`);
+  const F = createBoard({ endpoint: '' });
+  r = await F.submit(S({ name: 'Local Only', mode: 'free' })); t = await F.top({ board: 'alltime' });
+  check(r.ok && !r.remote && r.queued === false && t.remote === false, 'endpoint "" → local-only mode, nothing queued');
+}
+
+// ------------------------------------------------------------------ ASSETS (throttled)
+async function suiteThrottle() {
+  cur = panel('12 images under ~400 kbps — ALL must load');
+  const bar = document.createElement('div'); bar.className = 'bar'; bar.innerHTML = '<i></i>'; cur.prepend(bar);
+  const prog = []; const doneAt = {};
+  const P = loadAssets({ manifestUrl: '/scratch/net/test-manifest.json', priority: ['title_t', 'portrait_t_a', 'sky_t_day'], onProgress: (f, k) => { prog.push([+f.toFixed(4), k, Math.round(performance.now() - t0)]); bar.firstChild.style.width = (f * 100).toFixed(1) + '%'; } });
+  const live = P.assets;
+  for (const k of Object.keys(await fetch('/scratch/net/test-manifest.json').then(r => r.json()).then(j => j.images))) live.ready(k).then(v => { doneAt[k] = [+(secs()), !!v]; });
+  const A = await P;
+  const rc = A.receipt;
+  R.info.receipt = rc; R.info.doneAt = doneAt; R.info.progressCalls = prog.length;
+  check(rc.loaded === 12 && rc.failed.length === 0 && rc.total === 12, `receipt ${rc.loaded}/${rc.total} loaded, failed [${rc.failed}] in ${(rc.ms / 1000).toFixed(1)} s (${(rc.bytes / 1e6).toFixed(2)} MB, decoder ${rc.decoder})`);
+  check(rc.ms > 8000, `total time ${(rc.ms / 1000).toFixed(1)} s ≫ 8 s stall window → proves there is no shared wall-clock timeout`);
+  check(rc.retried.length === 0, `no stall retries needed while bytes kept flowing (retried: [${rc.retried}])`);
+  let mono = true; for (let i = 1; i < prog.length; i++) if (prog[i][0] < prog[i - 1][0]) mono = false;
+  check(mono && prog.length > 12 && prog[prog.length - 1][0] === 1, `onProgress: ${prog.length} calls, monotonic, ends at 1 (byte-smoothed)`);
+  const order = Object.entries(doneAt).sort((a, b) => a[1][0] - b[1][0]).map(x => x[0]);
+  check(order.indexOf('title_t') < 4, `priority key title_t among first to land (order: ${order.join(' → ')})`);
+  const sz = A.size('swing_t_wide'); check(sz && sz.w <= 4096 && Math.abs(sz.w / sz.h - 5100 / 420) < 0.05, `5100 px strip downscaled to ${sz && sz.w}×${sz && sz.h} (aspect kept)`);
+  const tbl = document.createElement('table'); tbl.innerHTML = '<tr><th>key</th><th>kind</th><th class=n>size</th><th class=n>landed</th></tr>' + order.map(k => { const g = A.get(k); return `<tr><td>${k}</td><td>${g ? g.constructor.name.replace('HTML', '').replace('Element', '') : '—'}</td><td class=n>${A.size(k).w}×${A.size(k).h}</td><td class=n>${doneAt[k][0]} s</td></tr>`; }).join('');
+  cur.appendChild(tbl);
+}
+
+// ------------------------------------------------------------------ ASSETS (stall / trickle / 404)
+async function suiteStall() {
+  for (const transport of ['fetch', 'xhr']) {
+    await mock('/__test/reset');
+    cur = panel(`stall window + retry (${transport})`);
+    const doneAt = {}; const t1 = performance.now();
+    const P = loadAssets({ manifestUrl: '/scratch/net/stall-manifest.json', transport });
+    for (const k of ['portrait_stall', 'sky_trickle', 'tex_missing', 'tex_t_ivy']) P.assets.ready(k).then(v => { doneAt[k] = [(performance.now() - t1) / 1000, !!v]; });
+    const A = await P; const rc = A.receipt; const st = await mock('/__test/stats');
+    R.info[transport] = { receipt: rc, doneAt, hits: st.stallHits };
+    const ps = doneAt.portrait_stall, tr = doneAt.sky_trickle, mi = doneAt.tex_missing;
+    check(ps && ps[1] && st.stallHits['p1.webp'] === 2 && ps[0] > 7.5 && ps[0] < 13, `stalled request: silent after 4 KB → aborted at ~8 s, retried, loaded at ${ps && ps[0].toFixed(1)} s (server hits: ${st.stallHits['p1.webp']})`);
+    check(tr && tr[1] && st.stallHits['t1.webp'] === 1 && tr[0] > 12, `trickling request (6 chunks, 2.5 s apart, ${tr && tr[0].toFixed(1)} s total) → NOT timed out, 1 attempt`);
+    check(mi && !mi[1] && mi[0] < 3 && rc.failed.includes('tex_missing'), `404 fails fast without retry (${mi && mi[0].toFixed(2)} s)`);
+    check(A.has('tex_t_ivy') && A.get('portrait_stall') instanceof HTMLImageElement && A.get('sky_trickle') instanceof HTMLCanvasElement, 'good key unaffected; DOM key → <img>, GL key get() → upright canvas');
+    check(A.get('tex_missing') === null && A.texture({}, 'tex_missing') === null && A.meta('tex_missing') === null, 'missing key → get/meta/texture all null');
+    info(`receipt ${rc.loaded}/${rc.total} in ${(rc.ms / 1000).toFixed(1)} s, failed [${rc.failed}], retried [${rc.retried}]`);
+  }
+  cur = panel('broken manifest');
+  let t1 = performance.now();
+  const E = await loadAssets({ manifestUrl: '/scratch/net/nope.json' });
+  check(E.receipt.total === 0 && E.receipt.done && E.get('x') === null, `missing manifest → empty Assets, no throw (${(performance.now() - t1).toFixed(0)} ms)`);
+  t1 = performance.now();
+  const H = await loadAssets({ manifestUrl: MOCK + '/__test/hang/manifest.json', manifestTimeoutMs: 1500 });
+  check(H.receipt.total === 0 && performance.now() - t1 < 6000, `hanging manifest → timeout + 1 retry → empty (${((performance.now() - t1) / 1000).toFixed(1)} s)`);
+}
+
+// ------------------------------------------------------------------ VISUAL: orientation, mirror, textures
+async function suiteVisual() {
+  const THREE = await import('three');
+  cur = panel('real art: /assets/manifest.json');
+  const A = await loadAssets({ manifestUrl: '/assets/manifest.json', priority: ['title_portrait'] });
+  const T = await loadAssets({ manifestUrl: '/scratch/net/test-manifest.json' });
+  const rc = A.receipt;
+  check(rc.loaded === rc.total && rc.total >= 23, `${rc.loaded}/${rc.total} real assets in ${(rc.ms / 1000).toFixed(1)} s (${(rc.bytes / 1e6).toFixed(1)} MB), decoder ${rc.decoder}`);
+  const sw = A.size('swing_rocco'); check(sw && sw.w <= 4096, `swing_rocco 4158 px → ${sw && sw.w}×${sw && sw.h}`);
+  check(A.meta('swing_rocco').frames === 6 && A.meta('sky_rate_day').horizon === 0.86, 'meta() passes manifest fields through (frames, horizon…)');
+  const tA = A.texture(THREE, 'tex_ivy', { repeat: [4, 1] });
+  check(tA === A.texture(THREE, 'tex_ivy', { repeat: [4, 1] }) && tA !== A.texture(THREE, 'tex_ivy', { repeat: [2, 1] }), 'texture() cached per (key, opts)');
+  check(tA.colorSpace === THREE.SRGBColorSpace && tA.wrapS === THREE.RepeatWrapping && tA.repeat.x === 4, 'tex_ivy: sRGB + RepeatWrapping + repeat');
+  const tS = A.texture(THREE, 'sky_wrigley_dusk'); const tL = A.texture(THREE, 'tex_brick', { srgb: false });
+  check(tS.wrapS === THREE.ClampToEdgeWrapping && tS.flipY === false && tL.colorSpace === THREE.NoColorSpace, 'sky: clamp; ImageBitmap texture flipY=false (pre-flipped); srgb:false → NoColorSpace');
+  check(typeof A.url('portrait_rocco') === 'string' && A.url('portrait_rocco').startsWith('blob:'), 'url(key) → blob: URL for <img>/CSS');
+
+  // 2D row: get() must be upright for every kind
+  cur = panel('get() drawn on 2D canvas (must read TOP ↑ / arrow ◀)');
+  const grid = document.createElement('div'); grid.className = 'grid'; cur.appendChild(grid);
+  const cell = (label, draw) => { const d = document.createElement('div'); d.className = 'cell'; const c = document.createElement('canvas'); d.appendChild(c); d.append(label); grid.appendChild(d); draw(c); return c; };
+  const drawImg = (img, c, sx = 0, sw2 = null) => { const w = sw2 || img.width; c.width = 300; c.height = Math.round(300 * img.height / w); c.getContext('2d').drawImage(img, sx, 0, w, img.height, 0, 0, c.width, c.height); };
+  const topRed = c => { const d = c.getContext('2d').getImageData(Math.floor(c.width * 0.8), 2, 1, 1).data; return d[0] > 150 && d[2] < 110; };
+  const c1 = cell('sky_t_day · GL key', c => drawImg(T.get('sky_t_day'), c));
+  const c2 = cell('portrait_t_a · DOM key', c => drawImg(T.get('portrait_t_a'), c));
+  const c3 = cell('swing_t_wide · frame 0', c => { const g = T.get('swing_t_wide'); drawImg(g, c, 0, g.width / 6); });
+  check(topRed(c1) && topRed(c2) && topRed(c3), 'get(): red TOP band is at the top for GL (flipped-bitmap) and DOM (<img>) keys');
+
+  // WebGL row: texture() on planes
+  cur = panel('texture() in WebGL (must match the row above)');
+  const cv = document.createElement('canvas'); cv.id = 'gl'; cur.appendChild(cv);
+  const W = 366, H = 300; cv.width = W; cv.height = H;
+  const r = new THREE.WebGLRenderer({ canvas: cv, antialias: true, preserveDrawingBuffer: true }); r.setPixelRatio(1); r.setSize(W, H, false);
+  r.outputColorSpace = THREE.SRGBColorSpace;
+  const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0a1020);
+  const cam = new THREE.OrthographicCamera(0, W, H, 0, -10, 10);
+  const plane = (tex, x, y, w, h, frame) => {
+    const t = frame != null ? tex.clone() : tex;
+    if (frame != null) { t.repeat.set(1 / 6, 1); t.offset.set(frame / 6, 0); t.needsUpdate = true; }
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: t, transparent: true }));
+    m.position.set(x + w / 2, H - y - h / 2, 0); scene.add(m); return m;
+  };
+  const lbl = [];
+  plane(T.texture(THREE, 'sky_t_day'), 4, 4, 116, 50); lbl.push([4, 58, 'sky_t_day (bitmap)']);
+  plane(T.texture(THREE, 'portrait_t_a'), 124, 4, 44, 59); lbl.push([124, 66, 'portrait (img)']);
+  plane(T.texture(THREE, 'swing_t_wide'), 176, 4, 90, 44, 0); lbl.push([176, 52, 'strip f0']);
+  plane(T.texture(THREE, 'swing_t_wide', { mirror: true }), 272, 4, 90, 44, 0); lbl.push([272, 52, 'strip f0 mirror']);
+  // real art
+  plane(A.texture(THREE, 'sky_wrigley_day'), 4, 82, 176, 75); lbl.push([4, 161, 'sky_wrigley_day']);
+  plane(A.texture(THREE, 'sky_rate_night'), 186, 82, 176, 75); lbl.push([186, 161, 'sky_rate_night']);
+  plane(A.texture(THREE, 'swing_rocco'), 4, 176, 70, 57, 3); lbl.push([4, 237, 'rocco f3 (R)']);
+  plane(A.texture(THREE, 'swing_jett', { mirror: true }), 78, 176, 52, 57, 3); lbl.push([78, 237, 'jett f3 mirrored (L)']);
+  plane(A.texture(THREE, 'pitcher'), 150, 176, 44, 57, 3); lbl.push([150, 237, 'pitcher f3']);
+  plane(A.texture(THREE, 'portrait_nova'), 200, 172, 46, 62); lbl.push([200, 237, 'portrait_nova']);
+  plane(A.texture(THREE, 'tex_ivy', { repeat: [3, 1] }), 252, 176, 110, 36); lbl.push([252, 216, 'tex_ivy ×3']);
+  plane(A.texture(THREE, 'tex_crowd_south', { repeat: [2, 1] }), 252, 222, 110, 26); lbl.push([252, 252, 'crowd_south ×2']);
+  r.render(scene, cam);
+  const gl = r.getContext(); const px = new Uint8Array(4);
+  const readAt = (x, y) => { gl.readPixels(x, H - 1 - y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); return [...px]; };
+  const redAt = (x, y) => { const p = readAt(x, y); return p[0] > 150 && p[2] < 110; };
+  const blueAt = (x, y) => { const p = readAt(x, y); return p[2] > 150 && p[0] < 110; };
+  check(redAt(100, 6) && blueAt(100, 52), `GL sky_t_day (flipped ImageBitmap, flipY=false): red on top, blue at bottom ${readAt(100, 6)} / ${readAt(100, 52)}`);
+  check(redAt(160, 6) && blueAt(160, 61), `GL portrait_t_a (<img>, flipY=true): red on top ${readAt(160, 6)}`);
+  check(redAt(200, 6), `GL strip frame 0 with repeat/offset animation: red on top ${readAt(200, 6)}`);
+  const yl = (x, y) => { const p = readAt(x, y); return p[0] > 180 && p[1] > 160 && p[2] < 90; };
+  check(yl(181, 26) && !yl(259, 26) && yl(357, 26) && !yl(279, 26), 'mirror:true flips each FRAME in place (arrow moves from left edge to right edge of frame 0)');
+  const ctx2 = document.createElement('canvas'); ctx2.width = W; ctx2.height = H; // overlay labels
+  const o = ctx2.getContext('2d'); o.drawImage(cv, 0, 0); o.font = '10px system-ui'; o.fillStyle = '#9fb3e8'; for (const [x, y, s] of lbl) o.fillText(s, x, y + 10);
+  cv.replaceWith(ctx2); ctx2.id = 'gl';
+  R.info.receipt = rc;
+}
+
+const suites = { net: suiteNet, throttle: suiteThrottle, stall: suiteStall, visual: suiteVisual };
+(async () => {
+  try { await (suites[SUITE] || suiteNet)(); }
+  catch (e) { R.fail++; check(false, 'suite threw: ' + (e && e.stack || e)); }
+  R.seconds = +secs();
+  const s = $('#status'); s.className = 'pill ' + (R.fail ? 'bad' : 'ok'); s.textContent = `${R.pass} pass · ${R.fail} fail · ${R.seconds}s`;
+  window.__done = true;
+})();
+</script></body></html>

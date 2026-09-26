@@ -1,0 +1,322 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Actors harness — Windy City Derby</title>
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}</script>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}canvas{display:block;width:100%;height:100%}
+#hud{position:fixed;left:8px;top:8px;color:#fff;font:12px/1.3 ui-monospace,monospace;text-shadow:0 1px 2px #000;pointer-events:none;white-space:pre}</style></head>
+<body><canvas id="c"></canvas><div id="hud"></div>
+<script type="module">
+// Stand-in scene + scripted demo for actors.js / camera.js / fx.js.
+// URL: ?phase=stance|pitch|swing|contact|flight|homer|landed|take  &t=<s>  &char=rocco  &park=wrigley
+//      &art=0 (force procedural fallback)  &tod=day|dusk|night  &post=0 (no bloom)  &kind=homer|flyout|grounder|liner|foul|popup
+//      &ev=112&la=28&spray=-12  &pitch=fastball  &shot=reverse|blimp  &mode=title|select|result (camera only)
+// No phase → live looping demo.  window.__h.run(phase, t) re-runs deterministically (logic stepped at 60 Hz, one render).
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import * as D from '/src/data.js';
+import { createActors } from '/src/actors.js';
+import { createDirector } from '/src/camera.js';
+
+const Q = new URLSearchParams(location.search);
+const P = (k, d) => (Q.has(k) ? Q.get(k) : d);
+const charId = P('char', 'rocco'), parkId = P('park', 'wrigley'), tod = P('tod', 'day');
+const ART = P('art', '1') !== '0', POST = P('post', '1') !== '0';
+const char = D.CHAR_BY_ID[charId] || D.CHARACTERS[0];
+
+// ---------------------------------------------------------------- asset shim (CONTRACT Assets interface)
+async function loadAssetShim(keys) {
+  const imgs = {}, metas = {};
+  if (!ART) return shim();
+  let man = null;
+  try { man = await (await fetch('/assets/manifest.json')).json(); } catch { return shim(); }
+  const imgMeta = man.images || man;
+  await Promise.all(keys.map(k => new Promise(res => {
+    const m = imgMeta[k]; if (!m) return res();
+    const im = new Image(); im.onload = () => { imgs[k] = im; metas[k] = m; res(); }; im.onerror = () => res(); im.src = '/assets/' + m.src;
+  })));
+  return shim();
+  function shim() {
+    return {
+      get: k => imgs[k] || null, meta: k => metas[k] || null,
+      texture(T, k, o = {}) { const im = imgs[k]; if (!im) return null; const t = new T.Texture(im); t.needsUpdate = true; if (o.srgb !== false) t.colorSpace = T.SRGBColorSpace; if (o.repeat) { t.wrapS = t.wrapT = T.RepeatWrapping; t.repeat.set(...o.repeat); } return t; },
+      receipt: { loaded: Object.keys(imgs).length, failed: 0, total: keys.length, ms: 0 },
+    };
+  }
+}
+
+// ---------------------------------------------------------------- renderer
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: !POST, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+renderer.setSize(innerWidth, innerHeight, false);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.5, 9000);
+camera.position.set(0, 60, 200); camera.lookAt(0, 0, -100);
+let composer = null;
+if (POST) {
+  const pr = renderer.getPixelRatio();
+  const rt = new THREE.WebGLRenderTarget(Math.round(innerWidth * pr), Math.round(innerHeight * pr), { type: THREE.HalfFloatType, samples: 4 });
+  composer = new EffectComposer(renderer, rt);
+  composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth * pr / 2, innerHeight * pr / 2), 0.34, 0.42, 0.86));
+  composer.addPass(new OutputPass());
+  composer.setPixelRatio(pr); composer.setSize(innerWidth, innerHeight);
+}
+const render = () => (composer ? composer.render() : renderer.render(scene, camera));
+
+// ---------------------------------------------------------------- stand-in park
+const assets = await loadAssetShim([`swing_${charId}`, 'pitcher', `sky_${parkId}_${tod}`, 'tex_ivy', 'tex_crowd_north', 'tex_crowd_south']);
+const PK = D.PARKS[parkId];
+let realStadium = null;
+if (P('stadium', '0') === '1') {
+  try {
+    const { buildStadium } = await import('/src/stadium.js');
+    const cond = { timeOfDay: tod, weather: P('weather', 'clear'), wind: { mph: 8, dir: 20 } };
+    realStadium = buildStadium(THREE, { parkId, timeOfDay: tod, weather: cond.weather, wind: cond.wind, assets: await loadAssetShim([`sky_${parkId}_${tod}`, 'tex_ivy', 'tex_brick', 'tex_crowd_north', 'tex_crowd_south']), quality: 'high' });
+    realStadium.attach(scene);
+    realStadium.update(0.016, 0);
+  } catch (e) { console.warn('[harness] real stadium failed, using stand-in', e); realStadium = null; }
+}
+const LIGHT = {
+  day:   { sky: '#8fc3ff', hor: '#e6f1ff', hemiS: '#dcecff', hemiG: '#5a6a44', hemiI: 1.15, sun: '#fff0da', sunI: 2.7, sunDir: [-0.45, 0.8, 0.55], fog: '#cfe2f5' },
+  dusk:  { sky: '#3a2f6b', hor: '#ff9a5a', hemiS: '#ffb88a', hemiG: '#3a3040', hemiI: 0.75, sun: '#ffb070', sunI: 2.0, sunDir: [0.6, 0.28, -0.75], fog: '#b87a6a' },
+  night: { sky: '#05070f', hor: '#1b2a4a', hemiS: '#9fb4ff', hemiG: '#1a2230', hemiI: 0.55, sun: '#f4f7ff', sunI: 2.3, sunDir: [-0.2, 0.9, 0.4], fog: '#0d1424' },
+}[tod] || null;
+if (!realStadium) {
+  // gradient sky dome + optional art band
+  const skyGeo = new THREE.SphereGeometry(4000, 32, 16);
+  const skyMat = new THREE.ShaderMaterial({ side: THREE.BackSide, depthWrite: false, uniforms: { a: { value: new THREE.Color(LIGHT.sky) }, b: { value: new THREE.Color(LIGHT.hor) } },
+    vertexShader: 'varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.); }',
+    fragmentShader: 'uniform vec3 a,b; varying vec3 vP; void main(){ float h = clamp(vP.y*2.2,0.,1.); gl_FragColor = vec4(mix(b,a,pow(h,0.7)),1.); \n#include <colorspace_fragment>\n}' });
+  scene.add(new THREE.Mesh(skyGeo, skyMat));
+  const skyImg = assets.get(`sky_${parkId}_${tod}`), skyMeta = assets.meta(`sky_${parkId}_${tod}`);
+  if (skyImg) {
+    const tex = new THREE.Texture(skyImg); tex.needsUpdate = true; tex.colorSpace = THREE.SRGBColorSpace;
+    const R = 2600, arc = Math.PI * 0.9, Hh = R * arc * skyImg.height / skyImg.width, hz = skyMeta.horizon ?? 0.8;
+    const g = new THREE.CylinderGeometry(R, R, Hh, 48, 1, true, Math.PI - arc / 2, arc);
+    const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false, depthWrite: false }));
+    m.position.set(0, Hh / 2 - Hh * (1 - hz) + 30, 0); m.scale.x = -1; scene.add(m);
+  }
+  scene.fog = new THREE.Fog(LIGHT.fog, 900, 5200);
+  const hemi = new THREE.HemisphereLight(LIGHT.hemiS, LIGHT.hemiG, LIGHT.hemiI); scene.add(hemi);
+  const sun = new THREE.DirectionalLight(LIGHT.sun, LIGHT.sunI);
+  sun.position.set(...LIGHT.sunDir.map(v => v * 300)); sun.target.position.set(0, 0, -40);
+  sun.castShadow = true; sun.shadow.mapSize.set(1024, 1024);
+  Object.assign(sun.shadow.camera, { left: -90, right: 90, top: 90, bottom: -90, near: 10, far: 900 }); sun.shadow.bias = -0.0005;
+  scene.add(sun, sun.target);
+
+  // field texture (whole park) + high-res plate decal
+  const fc = document.createElement('canvas'); fc.width = fc.height = 2048;
+  const g2 = fc.getContext('2d');
+  const X = x => (x + 450) / 900 * 2048, Z = z => (z + 780) / 900 * 2048, S = v => v / 900 * 2048;
+  g2.fillStyle = '#3d7a2f'; g2.fillRect(0, 0, 2048, 2048);
+  for (let i = -20; i < 20; i++) { g2.fillStyle = i % 2 ? 'rgba(255,255,255,0.045)' : 'rgba(0,0,0,0.05)'; g2.save(); g2.translate(X(0), Z(0)); g2.rotate(Math.PI / 4); g2.fillRect(S(i * 24), -2000, S(24), 4000); g2.restore(); }
+  g2.fillStyle = '#b3804f'; // infield dirt arc
+  g2.beginPath(); g2.moveTo(X(0), Z(8)); g2.arc(X(0), Z(-60.5), S(95), Math.PI * 0.25 + Math.PI / 2 - 0.01, Math.PI * 0.25 - Math.PI / 2 + 0.01 + 2 * Math.PI, false); g2.closePath(); g2.fill();
+  g2.fillStyle = '#3f7c31'; g2.save(); g2.translate(X(0), Z(-63.6)); g2.rotate(Math.PI / 4); g2.fillRect(-S(38), -S(38), S(76), S(76)); g2.restore();
+  g2.fillStyle = '#b3804f'; g2.beginPath(); g2.arc(X(0), Z(-60.5), S(9), 0, 7); g2.fill();
+  g2.beginPath(); g2.arc(X(0), Z(0), S(13), 0, 7); g2.fill();
+  g2.strokeStyle = 'rgba(255,255,255,0.9)'; g2.lineWidth = S(0.35);
+  for (const s of [-1, 1]) { g2.beginPath(); g2.moveTo(X(0), Z(0)); g2.lineTo(X(s * 340), Z(-340)); g2.stroke(); }
+  for (const b of [[63.64, -63.64], [0, -127.28], [-63.64, -63.64]]) { g2.fillStyle = '#fff'; g2.fillRect(X(b[0]) - S(0.75), Z(b[1]) - S(0.75), S(1.5), S(1.5)); }
+  const ftex = new THREE.CanvasTexture(fc); ftex.colorSpace = THREE.SRGBColorSpace; ftex.anisotropy = 8;
+  const field = new THREE.Mesh(new THREE.PlaneGeometry(900, 900), new THREE.MeshStandardMaterial({ map: ftex, roughness: 0.95 }));
+  field.rotation.x = -Math.PI / 2; field.position.set(0, 0, -780 + 450); field.receiveShadow = true; scene.add(field);
+  const outer = new THREE.Mesh(new THREE.PlaneGeometry(8000, 8000), new THREE.MeshStandardMaterial({ color: '#2d4a2a', roughness: 1 }));
+  outer.rotation.x = -Math.PI / 2; outer.position.y = -1.0; scene.add(outer);
+  const pc = document.createElement('canvas'); pc.width = pc.height = 1024; const g3 = pc.getContext('2d');
+  const px = x => (x + 12) / 24 * 1024, pz = z => (z + 12) / 24 * 1024;
+  g3.fillStyle = '#b3804f'; g3.fillRect(0, 0, 1024, 1024);
+  const grd = g3.createRadialGradient(512, 512, 100, 512, 512, 512); grd.addColorStop(0, 'rgba(0,0,0,0)'); grd.addColorStop(1, 'rgba(0,0,0,0.08)'); g3.fillStyle = grd; g3.fillRect(0, 0, 1024, 1024);
+  g3.strokeStyle = 'rgba(255,255,255,0.85)'; g3.lineWidth = 7;
+  for (const s of [-1, 1]) g3.strokeRect(px(s > 0 ? 0.71 + 0.5 : -0.71 - 0.5 - 4), pz(-4.5), 4 / 24 * 1024, 6 / 24 * 1024);
+  g3.fillStyle = '#f4f4f0'; g3.beginPath(); g3.moveTo(px(0), pz(0)); g3.lineTo(px(0.71), pz(-0.71)); g3.lineTo(px(0.71), pz(-1.42)); g3.lineTo(px(-0.71), pz(-1.42)); g3.lineTo(px(-0.71), pz(-0.71)); g3.closePath(); g3.fill();
+  const ptex = new THREE.CanvasTexture(pc); ptex.colorSpace = THREE.SRGBColorSpace; ptex.anisotropy = 8;
+  const pm = new THREE.Mesh(new THREE.CircleGeometry(12, 48), new THREE.MeshStandardMaterial({ map: ptex, roughness: 0.95, transparent: true, alphaMap: (() => { const a = document.createElement('canvas'); a.width = a.height = 128; const q = a.getContext('2d'); const gg = q.createRadialGradient(64, 64, 50, 64, 64, 64); gg.addColorStop(0, '#fff'); gg.addColorStop(1, '#000'); q.fillStyle = gg; q.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(a); })() }));
+  pm.geometry.setAttribute('uv', pm.geometry.attributes.uv); pm.rotation.x = -Math.PI / 2; pm.position.y = 0.02; pm.receiveShadow = true; scene.add(pm);
+  const mound = new THREE.Mesh(new THREE.CylinderGeometry(4, 9, 0.83, 32), new THREE.MeshStandardMaterial({ color: '#b07c4c', roughness: 1 }));
+  mound.position.set(0, 0.415, -60.5); mound.receiveShadow = true; scene.add(mound);
+  const rubber = new THREE.Mesh(new THREE.BoxGeometry(2, 0.05, 0.5), new THREE.MeshStandardMaterial({ color: '#fff' })); rubber.position.set(0, 0.85, -60.5); scene.add(rubber);
+
+  // outfield wall + stands along data.js surfaces (so the ball lands exactly on them)
+  const ivy = assets.texture ? assets.texture(THREE, 'tex_ivy', { repeat: [1, 1] }) : null;
+  const crowd = assets.texture ? assets.texture(THREE, parkId === 'rate' ? 'tex_crowd_south' : 'tex_crowd_north', { repeat: [1, 1] }) : null;
+  const wallPos = [], wallUv = [], sPos = [], sUv = [];
+  for (let s = -46; s <= 46; s += 1) {
+    const a = s * Math.PI / 180, dx = Math.sin(a), dz = -Math.cos(a), r = D.fenceDistance(parkId, s);
+    wallPos.push(dx * r, 0, dz * r, dx * r, PK.fenceH, dz * r); wallUv.push((s + 46) / 4, 0, (s + 46) / 4, 1);
+    for (let k = 0; k <= 8; k++) { const rr = r + (PK.stands.depth + PK.street.width + 40) * k / 8; const h = D.surfaceHeight(parkId, Math.max(-45, Math.min(45, s)), rr + 0.01); sPos.push(dx * rr, h, dz * rr); sUv.push((s + 46) * r * 0.0175 / 30, k * 6); }
+  }
+  const idx = (cols, rows) => { const I = []; for (let i = 0; i < cols - 1; i++) for (let j = 0; j < rows - 1; j++) { const a = i * rows + j, b = (i + 1) * rows + j; I.push(a, b, a + 1, b, b + 1, a + 1); } return I; };
+  const wg = new THREE.BufferGeometry(); wg.setAttribute('position', new THREE.Float32BufferAttribute(wallPos, 3)); wg.setAttribute('uv', new THREE.Float32BufferAttribute(wallUv, 2)); wg.setIndex(idx(93, 2)); wg.computeVertexNormals();
+  if (ivy) { ivy.wrapS = ivy.wrapT = THREE.RepeatWrapping; }
+  scene.add(new THREE.Mesh(wg, new THREE.MeshStandardMaterial({ color: ivy ? '#ffffff' : (parkId === 'rate' ? '#1b1d22' : '#2f5a2a'), map: ivy || null, roughness: 0.9, side: THREE.DoubleSide })));
+  const sg = new THREE.BufferGeometry(); sg.setAttribute('position', new THREE.Float32BufferAttribute(sPos, 3)); sg.setAttribute('uv', new THREE.Float32BufferAttribute(sUv, 2)); sg.setIndex(idx(93, 9)); sg.computeVertexNormals();
+  if (crowd) { crowd.wrapS = crowd.wrapT = THREE.RepeatWrapping; }
+  scene.add(new THREE.Mesh(sg, new THREE.MeshStandardMaterial({ color: crowd ? '#dddddd' : '#5d6470', map: crowd || null, roughness: 0.95, side: THREE.DoubleSide })));
+  // CF board
+  if (PK.scoreboard) {
+    const sb = PK.scoreboard, r = D.scoreboardDistance(parkId, 0), w = 2 * r * Math.sin((sb.spray[1] * Math.PI) / 180);
+    const b = new THREE.Mesh(new THREE.BoxGeometry(w, sb.h - PK.stands.topH, sb.depth), new THREE.MeshStandardMaterial({ color: parkId === 'rate' ? '#0d0f14' : '#1f4a2c', roughness: 0.6 }));
+    b.position.set(0, PK.stands.topH + (sb.h - PK.stands.topH) / 2, -r - sb.depth / 2); scene.add(b);
+  }
+  // simple grandstand bowl behind the plate (for reverse angles)
+  const bowl = new THREE.Mesh(new THREE.CylinderGeometry(200, 120, 80, 48, 1, true, Math.PI + 1.0, Math.PI * 2 - 2.0), new THREE.MeshStandardMaterial({ color: '#4a5260', roughness: 1, side: THREE.DoubleSide, map: crowd || null }));
+  bowl.position.set(0, 40, 0); bowl.rotation.y = 0; if (crowd) { bowl.material.map = crowd.clone(); bowl.material.map.repeat.set(30, 3); bowl.material.map.needsUpdate = true; } scene.add(bowl);
+}
+
+// ---------------------------------------------------------------- actors / director
+const actors = createActors(THREE, { scene, assets, charId, parkId, onEvent: (t, p) => (window.__events = window.__events || []).push(t) });
+let director = createDirector(THREE, camera, { parkId, bats: char.bats, occluders: realStadium ? realStadium.group : null });
+director.resize(camera.aspect);
+camera.fov = director.fovFor(camera.aspect); camera.updateProjectionMatrix();
+
+// ---------------------------------------------------------------- local stand-ins for sim (pitch + ballistic flight)
+function makePitch(type = 'fastball', mph = 92, px = 0.15, py = 2.55) {
+  const T = D.PITCHES[type], MPH = D.TUNING.mph, G = D.TUNING.gravity;
+  const flightTime = 54 / (mph * MPH) * D.TUNING.pitchTimeScale, Treal = flightTime / D.TUNING.pitchTimeScale, hump = 0.5 * G * Treal * Treal;
+  const [mx, my] = T.move, bs = T.breakStart, [rx, ry, rz] = D.RELEASE, preX = px - mx, preY = py - my;
+  const breakFn = u => (bs >= 1 || u <= bs) ? 0 : u <= 1 ? ((u - bs) / (1 - bs)) ** 2 : 1 + (2 / (1 - bs)) * (u - 1);
+  const posAt = t => { const u = Math.max(0, t) / flightTime, b = breakFn(u); return [rx + (preX - rx) * u + mx * b, Math.max(0.121, ry + (preY - ry) * u + hump * u * (1 - u) + my * b), rz - rz * u]; };
+  const tArrive = flightTime * (-rz + D.TUNING.contactZ) / -rz;
+  const showAt = flightTime * D.TUNING.ringShowFrac;
+  const hasBreak = bs < 1 && (mx || my);
+  const snapAt = hasBreak ? Math.max(showAt, flightTime * (bs + (1 - bs) * Math.sqrt(0.2))) : showAt;
+  return { n: 5, type, label: T.label, mph, flightTime, plateLoc: [px, py], inZone: true, posAt, clockRate: () => 1, tArrive,
+    ring: { showAt, preLoc: hasBreak ? [preX, preY] : [px, py], trueLoc: [px, py], snapAt } };
+}
+function ballistic(from, ev, la, spray) {
+  const K = D.TUNING, dt = 1 / 60, v = ev * K.mph, a = la * Math.PI / 180, s = spray * Math.PI / 180;
+  let [x, y, z] = from, vx = v * Math.cos(a) * Math.sin(s), vy = v * Math.sin(a), vz = -v * Math.cos(a) * Math.cos(s);
+  const pts = [0, x, y, z]; let t = 0, apex = [x, y, z], landing = null, fenceT = null, landT = 0, distance = null, rolling = false;
+  for (let i = 0; i < 2000; i++) {
+    const sp = Math.hypot(vx, vy, vz), h = Math.hypot(vx, vz) || 1e-6, kl = landing ? 0 : K.liftK * Math.exp(-t / 3);
+    const ax = -K.dragK * sp * vx - kl * sp * vy * vx / h, ay = -K.gravity - K.dragK * sp * vy + kl * sp * h, az = -K.dragK * sp * vz - kl * sp * vy * vz / h;
+    const r0 = Math.hypot(x, z);
+    if (!rolling) { vx += ax * dt; vy += ay * dt; vz += az * dt; x += vx * dt; y += vy * dt; z += vz * dt; }
+    else { const hs = Math.hypot(vx, vz); if (hs < 1) break; const k = Math.max(0, 1 - 18 * dt / hs); vx *= k; vz *= k; x += vx * dt; z += vz * dt; }
+    t += dt;
+    if (y > apex[1]) apex = [x, y, z];
+    const r = Math.hypot(x, z), sd = Math.atan2(x, -z) * 180 / Math.PI, fr = D.fenceDistance(parkId, sd);
+    if (fenceT == null && r0 < fr && r >= fr) fenceT = t;
+    const sbR = D.scoreboardDistance(parkId, sd);
+    if (sbR != null && !landing && r0 < sbR && r >= sbR && y < PK.scoreboard.h) { // off the board face → drop
+      const k = (sbR - 0.4) / r; x *= k; z *= k; landing = [x, y, z]; landT = t; pts.push(t, x, y, z);
+      for (let j = 1; j <= 40; j++) { const tt = t + j / 60; const yy = Math.max(D.surfaceHeight(parkId, sd, sbR - 1) + 0.12, y - 16 * (j / 60) ** 2 * 3); pts.push(tt, x, yy, z); }
+      break;
+    }
+    const surf = r < fr ? 0 : D.surfaceHeight(parkId, Math.max(-45, Math.min(45, sd)), r);
+    if (distance == null && y <= 0 && vy < 0) distance = r;
+    if (y <= surf + 0.12 && vy < 0) {
+      y = surf + 0.12;
+      if (!landing) { landing = [x, y, z]; landT = t; }
+      if (surf > 0) { pts.push(t, x, y, z); break; }
+      vy = -vy * 0.35; vx *= 0.7; vz *= 0.7; if (vy < 3) { rolling = true; vy = 0; }
+    }
+    pts.push(t, x, y, z);
+    if (t > 12) break;
+  }
+  if (distance == null) distance = Math.hypot(landing[0], landing[2]);
+  const n = pts.length / 4, e = (n - 1) * 4;
+  return { pts: Float32Array.from(pts), apex, landing: landing || [x, y, z], rest: [pts[e + 1], pts[e + 2], pts[e + 3]], fenceT, hitBoard: false, clearedBoard: false, hangTime: landT, distance };
+}
+let OV = {};
+function makeResult(pitch) {
+  const kind = OV.kind || P('kind', 'homer');
+  const presets = { homer: [112, 28, -14, 0.96, 'sweet'], flyout: [96, 34, 10, 0.6, 'under'], grounder: [88, -6, 18, 0.4, 'topped'], liner: [101, 12, -4, 0.75, 'solid'], foul: [85, 30, 58, 0.3, 'off the end'], popup: [78, 62, 6, 0.2, 'under'] };
+  const [ev0, la0, sp0, q, contactQ] = presets[kind] || presets.homer;
+  let ev = +(OV.ev ?? P('ev', ev0)); const la = +(OV.la ?? P('la', la0)), spray = +(OV.spray ?? P('spray', sp0));
+  const contactT = pitch.tArrive, contactPos = pitch.posAt(contactT);
+  if (OV.dist) { let lo = 70, hi = 150; for (let i = 0; i < 22; i++) { const m = (lo + hi) / 2; if (ballistic(contactPos, m, la, spray).distance < OV.dist) lo = m; else hi = m; } ev = (lo + hi) / 2; }
+  const path = ballistic(contactPos, ev, la, spray);
+  return { kind, swung: true, timingErr: 0, timingLabel: 'PERFECT', quality: q, contact: contactQ, exitVelo: ev, launch: la, spray, distance: path.distance, hangTime: path.hangTime, contactT, contactPos, path, bonus: null };
+}
+
+// ---------------------------------------------------------------- deterministic timeline
+const DT = 1 / 60;
+let T = 0;
+function step(n = 1, flightHook) { for (let i = 0; i < n; i++) { T += DT; if (flightHook) flightHook(); actors.update(DT, T); director.update(DT, T); } if (realStadium) realStadium.update(DT * n, T); }
+function* timeline(phase = 'homer', tArg) {
+  T = 0;
+  window.__events = [];
+  const pitch = makePitch(P('pitch', 'fastball'), +P('mph', 92), +P('px', 0.15), +P('py', 2.55));
+  const res = makeResult(pitch);
+  director = createDirector(THREE, camera, { parkId, bats: char.bats, occluders: (realStadium && P('occ', '1') !== '0') ? realStadium.group : null }); director.resize(camera.aspect);
+  actors.reset();
+  const camMode = P('mode', null);
+  if (camMode) { director.setMode(camMode, { instant: true, result: res }); yield* S(Math.round((+tArg || 2) * 60)); return info(); }
+  const ov = Q.has('cam') ? { pos: Q.get('cam').split(',').map(Number), look: (Q.get('look') || '0,3,-60').split(',').map(Number), fov: Q.has('fov') ? +Q.get('fov') : undefined } : null;
+  director.setMode('batting', { instant: true, override: ov });
+  yield* S(90);
+  if (phase === 'stance') { yield* S(Math.round((+tArg || 1) * 60)); return info(); }
+  const s = actors.startPitch(pitch);
+  let timer = s.releaseIn;
+  const tw = tArg != null && phase === 'windup' ? +tArg : null;
+  while (timer > 0) { if (tw != null && s.releaseIn - timer >= tw) return info(); timer -= DT; yield* S(1); }
+  let pt = -timer;
+  const swingAt = phase === 'take' ? 1e9 : res.contactT - D.TUNING.swingLead;
+  const pitchStop = phase === 'pitch' ? (tArg != null ? +tArg : pitch.flightTime * 0.66) : phase === 'swing' ? swingAt + (tArg != null ? +tArg : 0.08) : 1e9;
+  let swung = false;
+  while (true) {
+    if (!swung && pt >= swingAt) { actors.swing(); swung = true; }
+    if (swung && pt >= res.contactT) break;
+    actors.setPitchTime(pt, pitch);
+    if (pt >= pitchStop) return info();
+    if (pt >= pitch.flightTime + D.TUNING.takeGrace) { actors.take({ kind: 'strike', swung: false }); yield* S(Math.round((+tArg || 0.3) * 60)); return info(); }
+    pt += DT; yield* S(1);
+  }
+  actors.setPitchTime(res.contactT, pitch);
+  actors.contact(res);
+  const sweet = res.contact === 'sweet';
+  if (sweet) director.shake(0.6);
+  director.follow(res);
+  let hit = sweet ? 0.085 : 0.03;
+  if (phase === 'contact') { yield* S(Math.max(1, Math.round((tArg != null ? +tArg : 0.03) * 60))); return info(); }
+  while (hit > 0) { hit -= DT; yield* S(1); }
+  let tau = 0; const end = res.path.pts[res.path.pts.length - 4]; const homer = res.kind === 'homer';
+  let homerCam = false;
+  const stopTau = phase === 'flight' ? (tArg != null ? +tArg : 1.1) : phase === 'homer' ? (tArg != null ? +tArg : Math.min((res.path.fenceT || 3) + (OV.homerOffset ?? -0.2), res.hangTime - 0.02)) : 1e9;
+  while (tau < end) {
+    const ts = tau < 0.22 ? (homer ? 0.45 : 0.7) : homer ? 1.25 : 1.6;
+    tau += DT * ts;
+    if (homer && !homerCam && res.path.fenceT != null && tau >= Math.max(0.6, res.path.fenceT - 0.9)) { homerCam = true; director.setMode('homer', { result: res, shot: OV.shot || P('shot', undefined) }); }
+    actors.ballFlightT(Math.min(tau, end));
+    yield* S(1);
+    if (tau >= stopTau) return info();
+  }
+  actors.ballFlightT(end); actors.settle(res);
+  yield* S(Math.round((tArg != null ? +tArg : 1.4) * 60));
+  return info();
+  function info() { return { phase, T: +T.toFixed(3), state: actors.state, cam: director.pose, mode: director.mode, shot: director.shot, pick: director.pick, dist: Math.round(res.distance), ev: +res.exitVelo.toFixed(1), landing: res.path.landing.map(v => Math.round(v)), fenceT: res.path.fenceT, events: window.__events }; }
+}
+
+function* S(n = 1) { for (let i = 0; i < n; i++) { step(1); yield; } }
+function run(phase, tArg) { const g = timeline(phase, tArg); let r; while (!(r = g.next()).done); return r.value; }
+
+window.__h = { homer(o, phase = 'landed', t) { OV = o || {}; const r = run(phase, t); render(); OV = {}; return r; }, run, actors, get director() { return director; }, render, scene, camera, renderer, THREE, D };
+const phase = P('phase', Q.has('mode') ? 'cam' : null);
+if (phase) {
+  const r = run(phase, Q.has('t') ? +Q.get('t') : undefined);
+  render();
+  window.__ready = r;
+  console.log('[harness]', JSON.stringify(r));
+} else {
+  // live loop: the scripted demo in real time, repeating
+  let last = performance.now(), acc = 0, g = timeline('landed', 2.5);
+  const hud = document.getElementById('hud');
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const dt = Math.min(0.1, (now - last) / 1000); last = now; acc += dt;
+    while (acc >= DT) { acc -= DT; if (g.next().done) g = timeline('landed', 2.5); }
+    if (Q.has('hud')) hud.textContent = JSON.stringify(actors.state.phase) + ' ' + director.mode;
+    render();
+  }
+  requestAnimationFrame(frame);
+}
+addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight, false); composer && composer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); director.resize(camera.aspect); });
+</script></body></html>

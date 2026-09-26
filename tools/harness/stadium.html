@@ -1,0 +1,98 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Stadium harness</title>
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}</script>
+<style>
+html,body{margin:0;height:100%;background:#000;overflow:hidden}
+#gl{position:fixed;inset:0;width:100%;height:100%;display:block}
+#hud{position:fixed;left:6px;top:6px;font:11px/1.3 ui-monospace,Menlo,monospace;color:#fff;background:rgba(0,0,0,.45);padding:4px 6px;border-radius:4px;white-space:pre;pointer-events:none;display:none}
+</style></head><body><canvas id="gl"></canvas><div id="hud"></div>
+<script type="module">
+// Harness for src/render.js + src/stadium.js
+// ?park=wrigley|rate &tod=day|dusk|night &weather=clear|overcast|heat|drizzle &cam=batting|cf|high|lf|rf|board|title
+// &q=high|medium|low &mph=12&dir=0 &noassets=1 &cel=1 &crowd=0.4 &live=1 &hud=1 &bats=R|L
+import * as THREE from 'three';
+import { createRenderer } from '/src/render.js';
+import { buildStadium } from '/src/stadium.js';
+
+const P = new URLSearchParams(location.search);
+const park = P.get('park') || 'wrigley', tod = P.get('tod') || 'day', weather = P.get('weather') || 'clear';
+const camName = P.get('cam') || 'batting', q = P.get('q') || 'high';
+const wind = { mph: +(P.get('mph') ?? 12), dir: +(P.get('dir') ?? 20) };
+
+// ---- tiny Assets shim (CONTRACT Assets interface: get / meta / texture)
+async function loadShim(keys) {
+  const imgs = {}, meta = {};
+  if (P.get('noassets')) return mkAssets(imgs, meta);
+  try {
+    const man = await (await fetch('/assets/manifest.json')).json();
+    await Promise.all(keys.map(async k => {
+      const m = man.images && man.images[k]; if (!m) return;
+      const im = new Image(); im.src = '/assets/' + m.src;
+      try { await im.decode(); imgs[k] = im; meta[k] = m; } catch (e) { console.warn('asset failed', k); }
+    }));
+  } catch (e) { console.warn('manifest failed', e); }
+  return mkAssets(imgs, meta);
+}
+function mkAssets(imgs, meta) {
+  return {
+    get: k => imgs[k] || null, meta: k => meta[k] || null,
+    texture(T, k, o = {}) { const im = imgs[k]; if (!im) return null; const t = new T.Texture(im); t.needsUpdate = true; t.colorSpace = o.srgb === false ? T.NoColorSpace : T.SRGBColorSpace; if (o.repeat) { t.wrapS = t.wrapT = T.RepeatWrapping; t.repeat.set(...o.repeat); } return t; },
+    receipt: { loaded: Object.keys(imgs).length },
+  };
+}
+
+const canvas = document.getElementById('gl');
+const R = createRenderer(canvas, { quality: q, adaptive: false });
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.5, 9000);
+const portrait = innerWidth < innerHeight;
+const L = P.get('bats') === 'L' ? -1 : 1;
+const CAMS = {
+  batting: { pos: [-4 * L, 7.5, 15], look: [0, 4, -60], fov: portrait ? 58 : 38 },
+  cf: { pos: [0, 46, -380], look: [0, 8, 0], fov: portrait ? 62 : 44 },
+  high: { pos: [300, 340, 280], look: [0, 0, -190], fov: portrait ? 60 : 44 },
+  title: { pos: [-150, 150, 160], look: [0, 30, -250], fov: portrait ? 62 : 44 },
+  lf: { pos: [-70, 26, -160], look: [-250, 34, -335], fov: portrait ? 60 : 46 },
+  rf: { pos: [70, 26, -160], look: [250, 34, -335], fov: portrait ? 60 : 46 },
+  board: { pos: [0, 30, -220], look: [0, 70, -470], fov: portrait ? 50 : 36 },
+  plate: { pos: [30, 14, 30], look: [-5, 0, -10], fov: portrait ? 60 : 44 },
+  corner: { pos: [60, 55, -60], look: [260, 25, -260], fov: portrait ? 62 : 48 },
+  gsend: { pos: [120, 70, -420], look: [300, 35, -190], fov: portrait ? 62 : 48 },
+  outside: { pos: [-520, 90, -420], look: [-260, 30, -250], fov: portrait ? 62 : 48 },
+  behind: { pos: [0, 160, 330], look: [0, 40, 0], fov: portrait ? 62 : 48 },
+  marquee: { pos: [40, 40, 330], look: [0, 25, 200], fov: portrait ? 55 : 42 },
+  waveland: { pos: [-250, 9, -420], look: [-150, 20, -490], fov: portrait ? 62 : 50 },
+  bleachers: { pos: [-190, 58, -390], look: [0, 5, 0], fov: portrait ? 60 : 46 },
+};
+function setCam(name) {
+  const c = CAMS[name] || CAMS.batting; camera.position.set(...c.pos); camera.lookAt(...c.look);
+  camera.fov = c.fov; camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+}
+setCam(camName);
+R.resize(innerWidth, innerHeight);
+
+const keys = [`sky_${park}_${tod}`, 'tex_ivy', 'tex_brick', park === 'rate' ? 'tex_crowd_south' : 'tex_crowd_north'];
+const t0 = performance.now();
+const assets = await loadShim(keys);
+const tA = performance.now();
+const S = buildStadium(THREE, { parkId: park, timeOfDay: tod, weather, wind, assets, quality: q });
+const tB = performance.now();
+S.attach(scene);
+S.setBoard({ name: P.get('name') || 'NOVA', homers: 7, outs: 3, score: 12450, lastFt: 452, message: P.get('msg') || 'NOW BATTING' });
+S.setCrowd(+(P.get('crowd') ?? 0.4));
+let T = 0;
+function advance(sec = 0, steps = 1) { const dt = sec / Math.max(1, steps); for (let i = 0; i < steps; i++) { T += dt; S.update(dt, T); } render(); return T; }
+function render() { R.render(scene, camera); }
+function stats() {
+  const r = R.renderer; r.info.autoReset = false; r.info.reset(); r.render(scene, camera); const o = { calls: r.info.render.calls, tris: r.info.render.triangles, programs: r.info.programs?.length }; r.info.autoReset = true; render(); return o;
+}
+if (P.get('cel')) { S.celebrate({ spray: +(P.get('spray') ?? -20), distance: 447, bonus: P.get('bonus') || null }); }
+advance(+(P.get('t') ?? 0.5), +(P.get('steps') ?? 4));
+window.__h = { THREE, R, S, scene, camera, advance, render, stats, setCam, info: S.info(), build: { assetsMs: Math.round(tA - t0), buildMs: Math.round(tB - tA) } };
+window.__ready = true;
+console.log('[harness] built', park, tod, weather, q, JSON.stringify(window.__h.build), JSON.stringify(S.info()));
+if (P.get('hud')) { const h = document.getElementById('hud'); h.style.display = 'block'; h.textContent = `${park} ${tod} ${weather} ${q}\n` + JSON.stringify(stats()); }
+if (P.get('live')) { let last = performance.now(); const loop = now => { requestAnimationFrame(loop); const dt = Math.min(0.05, (now - last) / 1000); last = now; R.beginFrame(dt); T += dt; S.update(dt, T); render(); }; requestAnimationFrame(loop); }
+addEventListener('resize', () => { setCam(camName); R.resize(innerWidth, innerHeight); render(); });
+</script></body></html>

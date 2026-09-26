@@ -1,0 +1,2 @@
+{ "name": "windy-city-derby", "version": "1.0.0", "private": true, "type": "module",
+  "dependencies": { "esbuild": "0.24.0", "three": "0.169.0" } }

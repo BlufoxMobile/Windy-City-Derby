@@ -1,0 +1,279 @@
+{
+ "version": 1,
+ "images": {
+  "portrait_rocco": {
+   "src": "portrait_rocco.webp",
+   "w": 821,
+   "h": 1100,
+   "bytes": 187770
+  },
+  "portrait_jett": {
+   "src": "portrait_jett.webp",
+   "w": 821,
+   "h": 1100,
+   "bytes": 193142
+  },
+  "portrait_dex": {
+   "src": "portrait_dex.webp",
+   "w": 821,
+   "h": 1100,
+   "bytes": 185624
+  },
+  "portrait_blaze": {
+   "src": "portrait_blaze.webp",
+   "w": 821,
+   "h": 1100,
+   "bytes": 223680
+  },
+  "portrait_nova": {
+   "src": "portrait_nova.webp",
+   "w": 821,
+   "h": 1100,
+   "bytes": 209278
+  },
+  "portrait_skye": {
+   "src": "portrait_skye.webp",
+   "w": 821,
+   "h": 1100,
+   "bytes": 202878
+  },
+  "sky_wrigley_day": {
+   "src": "sky_wrigley_day.webp",
+   "w": 2048,
+   "h": 878,
+   "bytes": 251774,
+   "horizon": 0.78
+  },
+  "sky_wrigley_dusk": {
+   "src": "sky_wrigley_dusk.webp",
+   "w": 2048,
+   "h": 878,
+   "bytes": 197636,
+   "horizon": 0.78
+  },
+  "sky_wrigley_night": {
+   "src": "sky_wrigley_night.webp",
+   "w": 2048,
+   "h": 878,
+   "bytes": 143710,
+   "horizon": 0.78
+  },
+  "sky_rate_day": {
+   "src": "sky_rate_day.webp",
+   "w": 2048,
+   "h": 878,
+   "bytes": 166456,
+   "horizon": 0.86
+  },
+  "sky_rate_dusk": {
+   "src": "sky_rate_dusk.webp",
+   "w": 2048,
+   "h": 878,
+   "bytes": 194766,
+   "horizon": 0.86
+  },
+  "sky_rate_night": {
+   "src": "sky_rate_night.webp",
+   "w": 2048,
+   "h": 878,
+   "bytes": 140384,
+   "horizon": 0.86
+  },
+  "tex_ivy": {
+   "src": "tex_ivy.webp",
+   "w": 512,
+   "h": 512,
+   "bytes": 80022
+  },
+  "tex_brick": {
+   "src": "tex_brick.webp",
+   "w": 512,
+   "h": 512,
+   "bytes": 68750
+  },
+  "tex_crowd_north": {
+   "src": "tex_crowd_north.webp",
+   "w": 1536,
+   "h": 869,
+   "bytes": 212488
+  },
+  "tex_crowd_south": {
+   "src": "tex_crowd_south.webp",
+   "w": 1536,
+   "h": 869,
+   "bytes": 201088
+  },
+  "swing_rocco": {
+   "src": "swing_rocco.webp",
+   "w": 4158,
+   "h": 560,
+   "frames": 6,
+   "fw": 693,
+   "fh": 560,
+   "anchor": [
+    0.3659,
+    0.9908
+   ],
+   "heightFt": 7.217,
+   "contactFrame": 3,
+   "view": "rear-3/4, right-handed, faces +X (screen right)",
+   "bytes": 327714
+  },
+  "swing_jett": {
+   "src": "swing_jett.webp",
+   "w": 3138,
+   "h": 560,
+   "frames": 6,
+   "fw": 523,
+   "fh": 560,
+   "anchor": [
+    0.2591,
+    0.9907
+   ],
+   "heightFt": 6.429,
+   "contactFrame": 3,
+   "view": "rear-3/4, right-handed, faces +X (screen right)",
+   "bytes": 331482
+  },
+  "swing_dex": {
+   "src": "swing_dex.webp",
+   "w": 3450,
+   "h": 560,
+   "frames": 6,
+   "fw": 575,
+   "fh": 560,
+   "anchor": [
+    0.2241,
+    0.9907
+   ],
+   "heightFt": 6.78,
+   "contactFrame": 3,
+   "view": "rear-3/4, right-handed, faces +X (screen right)",
+   "bytes": 418172
+  },
+  "swing_blaze": {
+   "src": "swing_blaze.webp",
+   "w": 3084,
+   "h": 560,
+   "frames": 6,
+   "fw": 514,
+   "fh": 560,
+   "anchor": [
+    0.3064,
+    0.9907
+   ],
+   "heightFt": 6.251,
+   "contactFrame": 3,
+   "view": "rear-3/4, right-handed, faces +X (screen right)",
+   "bytes": 497842
+  },
+  "swing_nova": {
+   "src": "swing_nova.webp",
+   "w": 3432,
+   "h": 560,
+   "frames": 6,
+   "fw": 572,
+   "fh": 560,
+   "anchor": [
+    0.3318,
+    0.9908
+   ],
+   "heightFt": 6.455,
+   "contactFrame": 3,
+   "view": "rear-3/4, right-handed, faces +X (screen right)",
+   "bytes": 480740
+  },
+  "swing_skye": {
+   "src": "swing_skye.webp",
+   "w": 3690,
+   "h": 560,
+   "frames": 6,
+   "fw": 615,
+   "fh": 560,
+   "anchor": [
+    0.3569,
+    0.9909
+   ],
+   "heightFt": 6.79,
+   "contactFrame": 3,
+   "view": "rear-3/4, right-handed, faces +X (screen right)",
+   "bytes": 317276
+  },
+  "pitcher": {
+   "src": "pitcher.webp",
+   "w": 2652,
+   "h": 560,
+   "frames": 6,
+   "fw": 442,
+   "fh": 560,
+   "anchor": [
+    0.4133,
+    0.9913
+   ],
+   "heightFt": 6.514,
+   "releaseFrame": 3,
+   "view": "front, right-handed pitcher (throwing arm on image left)",
+   "bytes": 290648
+  },
+  "title_portrait": {
+   "src": "title_portrait.webp",
+   "w": 1080,
+   "h": 1910,
+   "bytes": 459174
+  },
+  "title_landscape": {
+   "src": "title_landscape.webp",
+   "w": 1920,
+   "h": 1086,
+   "bytes": 513198
+  },
+  "celebrate_rocco": {
+   "src": "celebrate_rocco.webp",
+   "w": 747,
+   "h": 1000,
+   "bytes": 157198
+  },
+  "celebrate_jett": {
+   "src": "celebrate_jett.webp",
+   "w": 747,
+   "h": 1000,
+   "bytes": 161694
+  },
+  "celebrate_dex": {
+   "src": "celebrate_dex.webp",
+   "w": 747,
+   "h": 1000,
+   "bytes": 156682
+  },
+  "celebrate_blaze": {
+   "src": "celebrate_blaze.webp",
+   "w": 747,
+   "h": 1000,
+   "bytes": 177980
+  },
+  "celebrate_nova": {
+   "src": "celebrate_nova.webp",
+   "w": 747,
+   "h": 1000,
+   "bytes": 170056
+  },
+  "celebrate_skye": {
+   "src": "celebrate_skye.webp",
+   "w": 747,
+   "h": 1000,
+   "bytes": 143470
+  },
+  "park_wrigley": {
+   "src": "park_wrigley.webp",
+   "w": 1280,
+   "h": 724,
+   "bytes": 181676
+  },
+  "park_rate": {
+   "src": "park_rate.webp",
+   "w": 1280,
+   "h": 724,
+   "bytes": 235528
+  }
+ }
+}

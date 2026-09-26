@@ -1,0 +1,8 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Windy City Derby (dev)</title>
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}</script>
+<script>fetch("/src/ui.css").then(r=>r.text()).then(t=>{const st=document.createElement("style");st.textContent=t;document.head.appendChild(st);});</script>
+<style>html,body{margin:0;height:100%;background:#05070d;overflow:hidden;overscroll-behavior:none;user-select:none;-webkit-user-select:none}#gl{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}#ui{position:fixed;inset:0;pointer-events:none}</style>
+</head><body><canvas id="gl"></canvas><div id="ui"></div><div id="wcd-fatal"></div>
+<script type="module" src="/src/main.js"></script></body></html>

@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Derby Audio Board</title>
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}</script>
+<style>
+:root{--bg:#070b16;--panel:#0f1729;--line:#1f2b47;--ink:#e8eefc;--dim:#8b9bc0;--acc:#35d0ff;--hot:#ff7a1a;--ok:#7cff6b;--bad:#ff4b3a}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.35 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;-webkit-tap-highlight-color:transparent}
+main{max-width:980px;margin:0 auto;padding:14px 16px 40px}
+header{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+h1{font-size:18px;letter-spacing:.08em;margin:0;font-weight:800}
+h1 b{color:var(--acc)}
+#status{color:var(--dim);font:12px/1.3 ui-monospace,Menlo,monospace}
+section{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px 12px;margin:10px 0}
+section h2{margin:0 0 8px;font-size:11px;letter-spacing:.16em;color:var(--dim);font-weight:700;text-transform:uppercase}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:6px}
+button{appearance:none;border:1px solid var(--line);background:#16213a;color:var(--ink);border-radius:9px;padding:10px 8px;font:600 12.5px/1.1 system-ui,sans-serif;cursor:pointer;touch-action:manipulation;min-height:40px}
+button:hover{border-color:#34507f}button:active{transform:translateY(1px);background:#1d2b4b}
+button.on{background:var(--acc);color:#04111c;border-color:var(--acc)}
+button.big{background:linear-gradient(180deg,#ff8c33,#e2481f);border-color:#ff8c33;color:#fff}
+button.warn{border-color:#5a2a2a}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+input[type=range]{flex:1;min-width:160px;accent-color:var(--acc)}
+#meters{display:grid;grid-template-columns:1fr;gap:8px}
+canvas{width:100%;height:120px;background:#050812;border:1px solid var(--line);border-radius:8px;display:block}
+.m{font:12px ui-monospace,Menlo,monospace;color:var(--dim)} .m b{color:var(--ink)}
+#log{font:11.5px/1.4 ui-monospace,Menlo,monospace;color:var(--dim);white-space:pre-wrap;max-height:220px;overflow:auto}
+</style></head>
+<body><main>
+<header><h1>WINDY CITY DERBY <b>AUDIO</b></h1><span id="status">locked — tap UNLOCK (or any button)</span></header>
+
+<section><h2>Master</h2><div class="row">
+  <button id="unlock" class="big">UNLOCK</button><button id="mute">MUTE</button><button id="musicOn" class="on">MUSIC ON</button>
+  <span class="m">crowd <b id="cv">0.35</b></span><input id="crowd" type="range" min="0" max="1" step="0.01" value="0.35">
+</div></section>
+
+<section><h2>Music cues</h2><div class="grid" id="cues"></div></section>
+<section><h2>Organ riffs</h2><div class="grid" id="riffs"></div></section>
+<section><h2>SFX</h2><div class="grid" id="sfx"></div></section>
+<section><h2>Scenarios</h2><div class="grid" id="scen"></div></section>
+<section><h2>Output</h2><div id="meters"><canvas id="spec" width="900" height="120"></canvas><canvas id="scope" width="900" height="120"></canvas>
+  <div class="m" id="lvl">peak — dBFS · rms — dBFS</div></div></section>
+<section><h2>Log</h2><div id="log"></div></section>
+</main>
+<script type="module">
+import { createAudio, SFX_NAMES, ORGAN_RIFFS, MUSIC_CUES, _data } from '/src/audio.js';
+
+const $ = id => document.getElementById(id);
+const logEl = $('log');
+const log = (...a) => { logEl.textContent = a.join(' ') + '\n' + logEl.textContent.slice(0, 4000); };
+const audio = createAudio();
+window.audio = audio;
+let analyser = null;
+
+function ensure() {
+  audio.unlock();
+  if (!analyser && audio.context && audio._nodes.out) {
+    analyser = audio.context.createAnalyser(); analyser.fftSize = 4096; analyser.smoothingTimeConstant = 0.6;
+    audio._nodes.out.connect(analyser); requestAnimationFrame(draw);
+  }
+}
+addEventListener('pointerdown', ensure, { capture: true, passive: true });
+addEventListener('keydown', ensure, { capture: true });
+
+const mk = (parent, label, fn, cls) => { const b = document.createElement('button'); b.textContent = label; if (cls) b.className = cls; b.onclick = () => { ensure(); fn(b); }; $(parent).appendChild(b); return b; };
+$('unlock').onclick = () => { ensure(); log('unlock →', audio.state); };
+$('mute').onclick = e => { audio.setMuted(!audio.muted); e.target.classList.toggle('on', audio.muted); e.target.textContent = audio.muted ? 'MUTED' : 'MUTE'; };
+$('musicOn').onclick = e => { audio.setMusicOn(!audio.musicOn); e.target.classList.toggle('on', audio.musicOn); e.target.textContent = audio.musicOn ? 'MUSIC ON' : 'MUSIC OFF'; };
+$('crowd').oninput = e => { audio.setCrowd(+e.target.value); $('cv').textContent = (+e.target.value).toFixed(2); };
+audio.setCrowd(0.35);
+MUSIC_CUES.forEach(c => mk('cues', c, () => { audio.music(c); log('music', c); }));
+mk('cues', 'stop (null)', () => { audio.music(null); log('music null'); }, 'warn');
+ORGAN_RIFFS.forEach(r => mk('riffs', r, () => { audio.organ(r); log('organ', r); }));
+mk('riffs', 'stop (null)', () => audio.organ(null), 'warn');
+SFX_NAMES.forEach(n => mk('sfx', n, () => { audio.sfx(n); log('sfx', n); }));
+mk('sfx', 'streak n=5', () => audio.sfx('streak', { n: 5 }));
+mk('sfx', 'countdown GO', () => audio.sfx('countdown', { final: true }));
+const later = (ms, f) => setTimeout(f, ms);
+mk('scen', 'AT-BAT: HOMER', () => {
+  audio.setCrowd(0.35); audio.sfx('pitch_whoosh');
+  later(720, () => { audio.sfx('bat_sweet'); audio.setCrowd(0.8); audio.sfx('crowd_roar'); });
+  later(3300, () => { audio.sfx('homer_horn'); audio.sfx('fireworks'); audio.organ('homer'); audio.sfx('streak', { n: 3 }); });
+  later(7500, () => audio.setCrowd(0.35));
+}, 'big');
+mk('scen', 'AT-BAT: FLYOUT', () => { audio.sfx('pitch_whoosh'); later(720, () => { audio.sfx('bat_solid'); audio.setCrowd(0.55); }); later(2600, () => { audio.sfx('crowd_groan'); audio.sfx('out'); audio.setCrowd(0.3); }); });
+mk('scen', 'AT-BAT: WHIFF', () => { audio.sfx('pitch_whoosh'); later(600, () => audio.sfx('whiff')); later(900, () => audio.sfx('mitt')); later(1200, () => { audio.sfx('crowd_groan'); audio.sfx('out'); }); });
+mk('scen', 'AT-BAT: FOUL', () => { audio.sfx('pitch_whoosh'); later(720, () => audio.sfx('foul')); });
+mk('scen', 'COUNTDOWN 3-2-1-GO', () => { [3, 2, 1].forEach((n, k) => later(k * 800, () => audio.sfx('countdown', { n }))); later(2400, () => audio.sfx('countdown', { final: true })); });
+mk('scen', 'ROUND START', () => { audio.setCrowd(0.35); audio.music('batting'); audio.organ('walkup'); });
+
+// ---------------------------------------------------------------- live meters
+function draw() {
+  requestAnimationFrame(draw);
+  const S = audio._state, D = _data.DATA;
+  $('status').textContent = `${audio.state} · ${audio.context ? audio.context.sampleRate + ' Hz' : ''} · voices ${S.voices} · cue ${S.cue || '-'} · riff ${S.riff && !S.riff.stopped ? S.riff.name : '-'} · data ${Object.keys(D).length}/${Object.keys(_data.JOBS).length}`;
+  if (!analyser) return;
+  const f = new Float32Array(analyser.frequencyBinCount), w = new Float32Array(analyser.fftSize);
+  analyser.getFloatFrequencyData(f); analyser.getFloatTimeDomainData(w);
+  let pk = 0, ss = 0; for (const v of w) { pk = Math.max(pk, Math.abs(v)); ss += v * v; }
+  $('lvl').innerHTML = `peak <b>${(20 * Math.log10(pk + 1e-9)).toFixed(1)}</b> dBFS · rms <b>${(10 * Math.log10(ss / w.length + 1e-12)).toFixed(1)}</b> dBFS`;
+  const c = $('spec').getContext('2d'), W = c.canvas.width, H = c.canvas.height; c.clearRect(0, 0, W, H);
+  const sr = audio.context.sampleRate; c.fillStyle = '#35d0ff';
+  for (let x = 0; x < W; x++) { const fr = 30 * Math.pow(18000 / 30, x / W), bin = Math.min(f.length - 1, Math.round(fr / (sr / 2) * f.length)); const db = f[bin]; const h = Math.max(0, (db + 110) / 100) * H; c.fillRect(x, H - h, 1, h); }
+  const s = $('scope').getContext('2d'); s.clearRect(0, 0, W, H); s.strokeStyle = '#ff7a1a'; s.beginPath();
+  for (let x = 0; x < W; x++) { const v = w[Math.floor(x / W * w.length)]; s.lineTo(x, H / 2 - v * H / 2); } s.stroke();
+}
+requestAnimationFrame(draw);
+
+// ============================================================================
+// OFFLINE TEST SUITE — renders each cue through the REAL graph on an
+// OfflineAudioContext (4 ch: 0-1 = final output, 2-3 = pre-safety-clip tap).
+// ============================================================================
+const SR = 44100;
+const SFX_DUR = { bat_sweet: 1.6, bat_solid: 1.4, bat_weak: 1.2, foul: 1, whiff: 1, mitt: 1.2, pitch_whoosh: 1.4, homer_horn: 4, fireworks: 6, crowd_roar: 5.5, crowd_groan: 3.5, streak: 3, record: 3, out: 1.8, ui_tap: 0.5, ui_back: 0.5, ui_confirm: 0.8, countdown: 0.6, ding: 1.8 };
+const RIFF_DUR = { charge: 5.5, walkup: 10, homer: 6.5, stretch: 21.5, tension: 16 };
+const CASES = {};
+SFX_NAMES.forEach(n => { CASES['sfx_' + n] = { dur: SFX_DUR[n] || 1.5, bed: false, tl: [[0.05, A => A.sfx(n)]] }; });
+ORGAN_RIFFS.forEach(r => { CASES['organ_' + r] = { dur: RIFF_DUR[r], bed: false, tl: [[0.05, A => A.organ(r)]] }; });
+CASES.music_title = { dur: 37, bed: false, tl: [[0.05, A => A.music('title')]] };
+CASES.music_batting = { dur: 24, bed: false, tl: [[0.05, A => A.music('batting')]] };
+CASES.music_roundOver = { dur: 6, bed: false, tl: [[0.05, A => A.music('roundOver')]] };
+CASES.crowd = { dur: 14, bed: true, tl: [[0, A => A.setCrowd(0.2)], [2.5, A => A.setCrowd(0.35)], [5, A => { A.setCrowd(0.8); A.sfx('crowd_roar'); }], [9, A => { A.setCrowd(0.3); A.sfx('crowd_groan'); }]] };
+CASES.crowd_levels = { dur: 16, bed: true, tl: [[0, A => A.setCrowd(0)], [4, A => A.setCrowd(0.35)], [8, A => A.setCrowd(0.7)], [12, A => A.setCrowd(1)]], windows: [[1.5, 3.8], [5.5, 7.8], [9.5, 11.8], [13.5, 15.8]] };
+CASES.stress_homer = { dur: 9, bed: true, tl: [
+  [0, A => { A.setCrowd(0.35); A.music('batting'); }], [0.5, A => A.sfx('pitch_whoosh')],
+  [1.22, A => { A.sfx('bat_sweet'); A.setCrowd(0.8); A.sfx('crowd_roar'); }],
+  [3.6, A => { A.sfx('homer_horn'); A.sfx('fireworks'); A.organ('homer'); A.sfx('streak', { n: 5 }); A.sfx('record'); A.sfx('ding'); }]] };
+CASES.stress_everything = { dur: 7, bed: true, tl: [[0.05, A => { A.setCrowd(1); A.music('title'); A.organ('charge'); SFX_NAMES.forEach(n => A.sfx(n)); }], [0.5, A => SFX_NAMES.forEach(n => A.sfx(n))]] };
+CASES.flow_round = { dur: 30, bed: true, tl: [ // a compressed real round, game.js call order
+  [0, A => { A.setCrowd(0.35); A.music('batting'); A.organ('walkup'); }],
+  [9, A => A.sfx('pitch_whoosh')], [9.72, A => { A.sfx('bat_solid'); A.setCrowd(0.55); }], [11.5, A => { A.sfx('crowd_groan'); A.sfx('out'); A.setCrowd(0.3); }],
+  [13.5, A => A.organ('tension')], [15.5, A => A.sfx('pitch_whoosh')], [16.2, A => { A.sfx('bat_sweet'); A.setCrowd(0.8); A.sfx('crowd_roar'); }],
+  [18.5, A => { A.sfx('homer_horn'); A.organ('homer'); A.setCrowd(0.35); }], [21.5, A => A.organ('tension')], [23, A => A.sfx('pitch_whoosh')],
+  [23.6, A => A.sfx('whiff')], [23.9, A => { A.sfx('mitt'); A.sfx('crowd_groan'); A.sfx('out'); }], [25.5, A => { A.music('roundOver'); A.setCrowd(0.4); }]] };
+const impulse = (A, node) => { const c = A.context, b = c.createBuffer(1, 64, c.sampleRate); b.getChannelData(0)[0] = 1; const s = c.createBufferSource(); s.buffer = b; s.connect(A._nodes[node]); s.start(A._state.vnow); };
+CASES.probe_verb = { dur: 3.2, bed: false, tl: [[0.05, A => impulse(A, 'verbIn')]] };
+CASES.probe_echo = { dur: 2.0, bed: false, tl: [[0.05, A => impulse(A, 'echoIn')]] };
+CASES.probe_dry = { dur: 0.5, bed: false, tl: [[0.05, A => impulse(A, 'sfx')]] };
+CASES.api_abuse = { dur: 6, bed: true, tl: [
+  [0.05, A => { for (let k = 0; k < 10; k++) A.organ('tension'); for (let k = 0; k < 200; k++) A.sfx(SFX_NAMES[k % SFX_NAMES.length]); A.music('title'); A.music('title'); A.music('batting'); A.music('batting'); A.music(null); A.music('batting'); A.setCrowd(NaN); A.setCrowd(7); A.setCrowd(-3); A.sfx('nope'); A.organ('nope'); A.music('nope'); }],
+  [1.0, A => { A.organ('tension'); A.organ('tension'); }], [2.0, A => { A.organ('homer'); A.organ('tension'); A.organ('tension'); }]] };
+CASES.musicOff = { dur: 3, bed: false, tl: [[0, A => A.setMusicOn(false)], [0.05, A => { A.music('title'); A.organ('charge'); }]] };
+CASES.muted = { dur: 2, bed: false, tl: [[0, A => A.setMuted(true)], [0.05, A => { A.music('title'); A.sfx('bat_sweet'); A.sfx('homer_horn'); }]] };
+CASES.silentBeforeUnlock = { dur: 2, bed: true, noUnlock: true, tl: [[0.05, A => { A.music('title'); A.sfx('bat_sweet'); A.organ('charge'); }]] };
+
+function fft(re, im) { // in-place radix-2
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) { let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit; if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; } }
+  for (let len = 2; len <= n; len <<= 1) {
+    const a = -2 * Math.PI / len, wr = Math.cos(a), wi = Math.sin(a);
+    for (let i = 0; i < n; i += len) { let cr = 1, ci = 0; for (let k = 0; k < len / 2; k++) {
+      const ur = re[i + k], ui = im[i + k], vr = re[i + k + len / 2] * cr - im[i + k + len / 2] * ci, vi = re[i + k + len / 2] * ci + im[i + k + len / 2] * cr;
+      re[i + k] = ur + vr; im[i + k] = ui + vi; re[i + k + len / 2] = ur - vr; im[i + k + len / 2] = ui - vi; const nr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = nr; } }
+  }
+}
+const BANDS = [[20, 150], [150, 500], [500, 1500], [1500, 4000], [4000, 8000], [8000, 20000]];
+function spectrum(x, from, to, sr) { // Welch, 4096 Hann, → band energy fractions + centroid
+  const N = 4096, hop = 2048, P = new Float64Array(N / 2); let segs = 0;
+  for (let s = from - N / 2; s + N / 2 <= to || segs === 0; s += hop) {
+    const re = new Float64Array(N), im = new Float64Array(N);
+    for (let i = 0; i < N; i++) { const v = s + i >= from && s + i < to ? x[s + i] : 0; re[i] = v * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1))); }
+    fft(re, im); for (let k = 0; k < N / 2; k++) P[k] += re[k] * re[k] + im[k] * im[k]; segs++;
+  }
+  let tot = 0, cen = 0; const bands = BANDS.map(() => 0);
+  for (let k = 1; k < N / 2; k++) { const f = k * sr / N; tot += P[k]; cen += P[k] * f; BANDS.forEach(([a, b], j) => { if (f >= a && f < b) bands[j] += P[k]; }); }
+  return { bands: bands.map(v => +(v / (tot || 1)).toFixed(3)), centroid: Math.round(cen / (tot || 1)) };
+}
+const db = v => +(20 * Math.log10(v + 1e-12)).toFixed(2);
+function stats(buf, o = {}) {
+  const L = buf.getChannelData(0), R = buf.getChannelData(1), PL = buf.getChannelData(2), PR = buf.getChannelData(3), n = L.length, sr = buf.sampleRate;
+  let pk = 0, pre = 0, nan = 0, ss = 0, clip = 0, first = -1, last = -1; const thr = Math.pow(10, -50 / 20);
+  const mono = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = L[i], b = R[i];
+    if (!Number.isFinite(a) || !Number.isFinite(b)) { nan++; continue; }
+    const m = Math.max(Math.abs(a), Math.abs(b)); if (m > pk) pk = m; if (m > 0.9661) clip++;
+    const p2 = Math.max(Math.abs(PL[i]), Math.abs(PR[i])); if (p2 > pre) pre = p2;
+    ss += a * a + b * b; mono[i] = (a + b) / 2;
+    if (m > thr) { if (first < 0) first = i; last = i; }
+  }
+  let ssA = 0; for (let i = Math.max(0, first); i <= last; i++) ssA += L[i] * L[i] + R[i] * R[i];
+  const act = first < 0 ? 0 : (last - first + 1);
+  const r = { peak: db(pk), prePeak: db(pre), rms: db(Math.sqrt(ss / (2 * n))), rmsActive: act ? db(Math.sqrt(ssA / (2 * act))) : -240,
+    onset: first < 0 ? null : +(first / sr).toFixed(3), active: +(act / sr).toFixed(2), nan, clipSamples: clip };
+  if (act > 0) { const sp = spectrum(mono, first, last + 1, sr); r.bands = sp.bands; r.centroid = sp.centroid; }
+  if (o.transient && first >= 0) { const sp = spectrum(mono, first, Math.min(n, first + Math.round(0.06 * sr)), sr); r.crack60ms = sp; }
+  if (o.windows) r.windows = o.windows.map(([a, b]) => { let s2 = 0; const i0 = Math.round(a * sr), i1 = Math.round(b * sr); for (let i = i0; i < i1; i++) s2 += L[i] * L[i] + R[i] * R[i]; const sp = spectrum(mono, i0, i1, sr); return { from: a, rms: db(Math.sqrt(s2 / (2 * (i1 - i0)))), centroid: sp.centroid, bands: sp.bands }; });
+  return r;
+}
+function wav16(buf) {
+  const L = buf.getChannelData(0), R = buf.getChannelData(1), n = L.length, dv = new DataView(new ArrayBuffer(44 + n * 4));
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); dv.setUint32(4, 36 + n * 4, true); w(8, 'WAVE'); w(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 2, true);
+  dv.setUint32(24, buf.sampleRate, true); dv.setUint32(28, buf.sampleRate * 4, true); dv.setUint16(32, 4, true); dv.setUint16(34, 16, true); w(36, 'data'); dv.setUint32(40, n * 4, true);
+  for (let i = 0; i < n; i++) { dv.setInt16(44 + i * 4, Math.max(-1, Math.min(1, L[i])) * 32767, true); dv.setInt16(46 + i * 4, Math.max(-1, Math.min(1, R[i])) * 32767, true); }
+  const u8 = new Uint8Array(dv.buffer); let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+async function renderCase(name, { wav = false } = {}) {
+  const C = CASES[name]; if (!C) throw new Error('no case ' + name);
+  const off = new OfflineAudioContext(4, Math.ceil(C.dur * SR), SR);
+  const A = createAudio({ context: off, bed: C.bed, connect: false, seed: 1234 });
+  const t0 = performance.now();
+  if (!C.noUnlock) A.unlock();
+  const split = off.createChannelSplitter(2), split2 = off.createChannelSplitter(2), merge = off.createChannelMerger(4);
+  if (A._nodes.out) { A._nodes.out.connect(split); A._nodes.preClip.connect(split2); split.connect(merge, 0, 0); split.connect(merge, 1, 1); split2.connect(merge, 0, 2); split2.connect(merge, 1, 3); }
+  merge.connect(off.destination);
+  const tl = C.tl.slice().sort((a, b) => a[0] - b[0]); let t = 0; const info = {};
+  for (const [at, fn] of tl) { for (; t < at; t += 0.02) A._advance(t); A._advance(at); fn(A); }
+  for (; t < C.dur; t += 0.02) A._advance(t);
+  info.stateAfter = { voicesScheduled: A._state.voices, tracks: A._state.tracks.map(k => k.name + (k.stopped ? '(stopped)' : '')), riff: A._state.riff ? A._state.riff.name : null, queued: A._state.queuedRiff, crowd: A._state.crowd, sched: A._state.stats };
+  const buf = await off.startRendering();
+  const r = { name, dur: C.dur, ...stats(buf, { transient: /bat_|foul|mitt/.test(name), windows: C.windows }), renderMs: Math.round(performance.now() - t0), ...info };
+  if (wav) r.wav = wav16(buf);
+  return r;
+}
+window.AUDIO_TEST = { CASES: Object.keys(CASES), renderCase };
+</script></body></html>
