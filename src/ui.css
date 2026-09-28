@@ -1010,3 +1010,19 @@
   .modal-tut .modal-foot { margin-top: 0; }
 }
 @keyframes tutDotS { 0%, 10% { transform: translateX(0) scale(.7); opacity: 0; } 18% { opacity: 1; transform: translateX(0) scale(1); } 55% { transform: translateX(50px); opacity: 1; } 75%, 100% { transform: translateX(50px); opacity: 0; } }
+
+/* ---- v2.1 FLICK mode: vertical coach mark + tutorial art ---- */
+.c-flick .coach-art { width: 60px; height: 72px; }
+.c-flick .coach-path { left: 50%; right: auto; top: 6px; bottom: 6px; width: 3px; height: auto; margin-left: -1.5px; background: linear-gradient(0deg, rgba(53, 208, 255, 0), rgba(53, 208, 255, .75), #fff); animation: coachPathUp 1.5s cubic-bezier(.5, 0, .3, 1) infinite; }
+.c-flick .coach-dot { left: 50%; top: auto; bottom: 0; margin-left: -12px; animation: coachDotUp 1.5s cubic-bezier(.5, 0, .3, 1) infinite; }
+@keyframes coachPathUp { 0%, 20% { clip-path: inset(0 0 100% 0); opacity: 1; } 62% { clip-path: inset(0 0 0 0); opacity: 1; } 90%, 100% { clip-path: inset(0 0 0 0); opacity: 0; } }
+@keyframes coachDotUp { 0%, 12% { transform: translateY(0) scale(.7); opacity: 0; } 20% { opacity: 1; transform: translateY(0) scale(1); } 62% { transform: translateY(-46px); opacity: 1; } 80%, 100% { transform: translateY(-46px); opacity: 0; } }
+.tut-flick .tut-path { left: 50%; right: auto; top: 22px; bottom: 30px; width: 4px; height: auto; margin-left: -2px; background: linear-gradient(0deg, rgba(53, 208, 255, 0), rgba(53, 208, 255, .8), #fff); animation: tutPathUp 1.9s cubic-bezier(.5, 0, .3, 1) infinite; }
+.tut-flick .tut-dot { left: 50%; top: auto; bottom: 22px; margin-left: -14px; animation: tutDotUp 1.9s cubic-bezier(.5, 0, .3, 1) infinite; }
+.tut-flick .tut-home { bottom: 8px; width: 34px; height: 30px; opacity: .8; }
+@keyframes tutPathUp { 0%, 18% { clip-path: inset(100% 0 0 0); opacity: 1; } 55% { clip-path: inset(0 0 0 0); opacity: 1; } 85%, 100% { clip-path: inset(0 0 0 0); opacity: 0; } }
+@keyframes tutDotUp { 0%, 10% { transform: translateY(0) scale(.7); opacity: 0; } 18% { opacity: 1; transform: translateY(0) scale(1); } 55% { transform: translateY(-58px); opacity: 1; } 75%, 100% { transform: translateY(-58px); opacity: 0; } }
+@media (orientation: landscape) and (max-height: 560px) {
+  .tut-flick .tut-dot { animation-name: tutDotUpS; } .tut-flick .tut-path { top: 12px; bottom: 22px; }
+}
+@keyframes tutDotUpS { 0%, 10% { transform: translateY(0) scale(.7); opacity: 0; } 18% { opacity: 1; transform: translateY(0) scale(1); } 55% { transform: translateY(-34px); opacity: 1; } 75%, 100% { transform: translateY(-34px); opacity: 0; } }

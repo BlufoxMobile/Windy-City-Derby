@@ -322,7 +322,7 @@ test('takes: in-zone = strike (out, streak resets); outside = ball (nothing)', (
 
 // ---------------------------------------------------------------------------- swing model
 test('swing: contact time = tapT − inputLatencyComp + swingLead; timing labels; whiffs', () => {
-  const R = createRound({ charId: 'rocco', seed: 11 }); const p = R.nextPitch(); const w = CHAR_BY_ID.rocco.swing.window;
+  const R = createRound({ charId: 'rocco', seed: 11 }); const p = R.nextPitch(); const w = CHAR_BY_ID.rocco.swing.window * (TUNING.assistWindow || 1);
   const at = e => R.resolveSwing(p, { tapT: perfectTap(p) + e * w, aim: 0, samples: false });
   const s0 = at(0); near(s0.timingErr, 0, 1e-12); near(s0.contactT, perfectTap(p) - TUNING.inputLatencyComp + TUNING.swingLead, 1e-12);
   near(s0.contactT, p.tArrive, 1e-12); s0.contactPos.forEach((v, i) => near(v, p.posAt(s0.contactT)[i], 1e-12));
@@ -410,7 +410,7 @@ test('swing: aim mismatch — oppo on an inside pitch jams, pulling an outside p
 test('swing: character traits — Blaze vs breaking, Skye streak power, Rocco biggest EV', () => {
   const findPitch = (seed, pred) => { const R = createRound({ charId: 'blaze', seed }); for (let k = 0; k < 40; k++) { const p = R.nextPitch(); if (pred(p)) return [R, p]; } return [null, null]; };
   let [R, p] = [null, null]; for (let s = 1; !p; s++) [R, p] = findPitch(s, q => q.type === 'slider' && q.inZone);
-  const w = CHAR_BY_ID.blaze.swing.window * CHAR_BY_ID.blaze.swing.breakWindowMul;
+  const w = CHAR_BY_ID.blaze.swing.window * CHAR_BY_ID.blaze.swing.breakWindowMul * (TUNING.assistWindow || 1);
   assert.equal(R.resolveSwing(p, { tapT: perfectTap(p) + 1.2 * w, aim: 0, samples: false }).timingLabel, 'LATE', 'Blaze window shrinks vs breaking');
   near(R.resolveSwing(p, { tapT: perfectTap(p) + 0.03, aim: 0, samples: false }).q.t, Math.exp(-((0.03 / w) ** 2)), 1e-9);
   // Skye: same swing, higher EV with a streak going

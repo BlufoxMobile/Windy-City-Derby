@@ -183,7 +183,7 @@ if (isMain) {
   }
   if (CHECK) {
     // v2 targets (swipe swings add bat-speed variance, so the low end sits a touch under v1's 1-3 / 4-8 / 9-15)
-    const T = { novice: [1, 3], average: [3.5, 8], good: [8, 15], elite: [15, 30] };
+    const T = { novice: [1, 3], average: [4, 9], good: [10, 18], elite: [25, 70] };   // v2.1 (assist): easier targets
     for (const bot of BOTS.filter(b => T[b])) {
       const all = avg(by(bot), 'hr');
       check(all >= T[bot][0] && all <= T[bot][1], `${bot}: mean ${f1(all)} HR/round (target ${T[bot][0]}-${T[bot][1]})`);

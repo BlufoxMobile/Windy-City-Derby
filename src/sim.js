@@ -554,8 +554,8 @@ function swingOutcome(char, park, cond, pitch, tapT, aim, streak, seed, samples,
   const uc = clamp(Number.isFinite(+uppercut) ? +uppercut : 0, -1, 1);
   const db = bs - TUNING.batSpeedRef;
   const leadT = swingLeadFor(bs);
-  const w = S.window * (brk ? S.breakWindowMul : 1) * clamp(1 - K.winSpeed * db, 0.7, 1.4);
-  const aimTol = S.aimTol * (brk ? S.breakWindowMul : 1) * clamp(1 - K.aimSpeed * db, 0.8, 1.25);
+  const w = S.window * (brk ? S.breakWindowMul : 1) * clamp(1 - K.winSpeed * db, 0.7, 1.4) * (TUNING.assistWindow || 1);
+  const aimTol = S.aimTol * (brk ? S.breakWindowMul : 1) * clamp(1 - K.aimSpeed * db, 0.8, 1.25) * (TUNING.assistAim || 1);
   aim = clamp(Number.isFinite(aim) ? aim : 0, -1, 1);
   const tArrive = pitch.tArrive != null ? pitch.tArrive : pitch.flightTime * (TUNING.contactZ - RELEASE[2]) / -RELEASE[2];
   const contactT = (Number.isFinite(tapT) ? tapT : -99) - TUNING.inputLatencyComp + leadT;

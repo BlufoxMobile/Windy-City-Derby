@@ -30,7 +30,7 @@ ap.add_argument('--pitch-warp', type=float, default=0.18, help='game speed from 
 ap.add_argument('--no-coach-shot', action='store_true', help="don't let pitch 1 go by to photograph the coach mark")
 ap.add_argument('--build', action='store_true', help='use dist/index.html instead of dev.html')
 ap.add_argument('--mode', default='free'); ap.add_argument('--timeout', type=int, default=900)
-ap.add_argument('--swing', default='swipe', choices=['swipe', 'button', 'mouse', 'key'])
+ap.add_argument('--swing', default='flick', choices=['flick', 'swipe', 'button', 'mouse', 'key'])
 ap.add_argument('--speed', type=float, default=0.9, help='bat speed to swipe at (0..1)')
 ap.add_argument('--noise', type=float, default=0.0, help='timing noise sigma (s) on the scripted swings')
 ap.add_argument('--quality', default='low'); ap.add_argument('--cond', default=None); ap.add_argument('--seed', default=None)
@@ -67,11 +67,13 @@ JS_PLAN = """async ([b, noise, mode]) => {
   const Ssz = Math.min(Math.max(Math.min(W, H), U.SWIPE.scaleMin), U.SWIPE.scaleMax);
   const vS = U.SWIPE.vMax * Math.pow(Math.max(0.02, b), 1 / U.SWIPE.gamma);      // short sides per second
   const vpx = vS * Ssz / 1000;                                                  // px per ms
-  const angDeg = up === 0 ? 0 : Math.sign(up) * (U.SWIPE.upDead + Math.abs(up) * (U.SWIPE.upFull - U.SWIPE.upDead));
-  const x0 = W * (0.5 + 0.44 * aim);
+  const flick = mode === 'flick';
+  // FLICK: a vertical flick tilted so dx/D = aim·flickTilt (ui.js maps it back to aim); SWIPE: angle = loft, start x = aim
+  const angDeg = flick ? Math.acos(Math.min(1, Math.abs(aim) * U.SWIPE.flickTilt)) * 180 / Math.PI : (up === 0 ? 0 : Math.sign(up) * (U.SWIPE.upDead + Math.abs(up) * (U.SWIPE.upFull - U.SWIPE.upDead)));
+  const x0 = flick ? W * 0.5 : W * (0.5 + 0.44 * aim);
   const btn = document.querySelector('.swing-btn')?.getBoundingClientRect();
   const seg = [...document.querySelectorAll('.aim-seg button')].map(e => { const r = e.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; });
-  return { tStart, now: G.frozenAt, origin: performance.timeOrigin, aim, up, angDeg, vpx, x0, y0: H * 0.8, dir: ch.bats === 'L' ? -1 : 1,
+  return { tStart, now: G.frozenAt, origin: performance.timeOrigin, aim, up, angDeg, vpx, x0, y0: H * 0.8, dir: flick ? (aim < 0 ? -1 : 1) : (ch.bats === 'L' ? -1 : 1), flick,
     n: p.n, Tstar, W, H, btn: btn ? [btn.x + btn.width / 2, btn.y + btn.height / 2] : null, seg, lane: aim < -1/3 ? 0 : aim > 1/3 ? 2 : 1, bats: ch.bats };
 }"""
 
@@ -80,7 +82,7 @@ async def main():
     async with async_playwright() as p:
         b = await p.chromium.launch(args=['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'])
         ctx = await b.new_context(viewport={'width': a.w, 'height': a.h}, has_touch=True, device_scale_factor=1)
-        await ctx.add_init_script(f"""try{{localStorage.setItem('wcd-settings', JSON.stringify({{sound:true,music:true,haptics:false,quality:'{a.quality}',swing:'{'button' if a.swing == 'button' else 'swipe'}'}}));localStorage.removeItem('wcd-coach-v2');}}catch(e){{}}""")
+        await ctx.add_init_script(f"""try{{localStorage.setItem('wcd-settings', JSON.stringify({{sound:true,music:true,haptics:false,quality:'{a.quality}',swing:'{'button' if a.swing == 'button' else 'flick' if a.swing == 'flick' else 'swipe'}',swingV3:true}}));localStorage.removeItem('wcd-coach-v2');}}catch(e){{}}""")
         pg = await ctx.new_page()
         cdp = await ctx.new_cdp_session(pg)
         def con(m):
@@ -111,6 +113,7 @@ async def main():
             o = plan['origin']; vx = plan['vpx'] * math.cos(math.radians(plan['angDeg'])) * plan['dir']; vy = -plan['vpx'] * math.sin(math.radians(plan['angDeg']))
             x0 = max(12, min(plan['W'] - 12, plan['x0'])); y0 = plan['y0']
             L = min(0.34 * plan['W'], (plan['W'] - 10 - x0) if plan['dir'] > 0 else (x0 - 10)); L = max(L, 60)
+            if plan.get('flick'): L = min(0.22 * plan['H'], y0 - 20)   # a short upward thumb flick
             dur = L / max(0.05, plan['vpx']); steps = max(4, min(9, int(dur / 8)))   # few events: CDP input is slow headless
             if a.swing == 'mouse':
                 await cdp.send('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': x0, 'y': y0, 'timestamp': ts(o, t_start - 80)})
@@ -160,7 +163,7 @@ async def main():
                     plan = await pg.evaluate(JS_PLAN, [bs, noise, a.swing])
                     if not plan: print(f'pitch {n}: missed the window'); continue
                     lag = plan['now'] - plan['tStart']      # (the game clock is frozen until the swing registers)
-                    if a.swing in ('swipe', 'mouse'): await swipe(plan, plan['tStart'])
+                    if a.swing in ('swipe', 'mouse', 'flick'): await swipe(plan, plan['tStart'])
                     elif a.swing == 'button': await press_button(plan, plan['tStart'])
                     else: await key_swing(plan, plan['tStart'])
                     await pg.evaluate("new Promise(r=>{const G=window.__wcd;const t0=performance.now();const iv=setInterval(()=>{if(G.swung||performance.now()-t0>8000){clearInterval(iv);G.freeze(false);r()}},5)})")

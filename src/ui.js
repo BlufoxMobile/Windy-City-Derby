@@ -22,6 +22,8 @@ import {
 
 /** Swipe → swing tuning (exported for tests / tools). Speeds in short-screen-sides per second. */
 export const SWIPE = {
+  flickMinFrac: 0.05, flickLiftFrac: 0.03,   // FLICK mode recognises sooner (a short, quick thumb flick)
+  flickTilt: 0.7,     // FLICK: aim = (dx / D) / flickTilt → a ~30° tilt is a solid pull / oppo, straight up = center
   minFrac: 0.075,     // displacement to recognise a swipe (× short side ≈ 29 px on a 390-wide phone)
   liftFrac: 0.045,    // …or this much if the finger already lifted (a quick flick)
   minSamples: 3, maxWait: 40,   // samples after the movement start, or ms, before judging speed
@@ -149,7 +151,7 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
   const S = {
     screen: null, screenEl: null, flow: 'free', name: sanitizeName(LS.get('wcd-ui-name', ''), { final: true }), district: LS.get('wcd-ui-district', '') || '',
     charId: CH[0].id, bats: CH[0].bats || 'R', hud: null, hudOn: false, armed: false, aim: 0, swings: 0,
-    prefs: { sound: saved.sound !== false, music: saved.music !== false, haptics: saved.haptics !== false, quality: saved.quality || 'auto', swing: saved.swing === 'button' ? 'button' : 'swipe' },
+    prefs: { sound: saved.sound !== false, music: saved.music !== false, haptics: saved.haptics !== false, quality: saved.quality || 'auto', swing: saved.swing === 'button' ? 'button' : saved.swing === 'swipe' && saved.swingV3 ? 'swipe' : 'flick' },
     coach: LS.get('wcd-coach-v2', {}) || {},
     knownBest: num(LS.get('wcd-ui-best', 0)), boardCtl: null, lastSummary: null,
   };
@@ -218,7 +220,7 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
     <div class="hud-lanes">
       <div class="lanes"><div class="lane" data-l="0"><span></span></div><div class="lane" data-l="1"><span></span></div><div class="lane" data-l="2"><span></span></div></div>
       <div class="aim-mk"><i></i></div>
-      <div class="hud-hint">SWIPE ACROSS THE PLATE</div>
+      <div class="hud-hint">FLICK UP TO SWING</div>
     </div>
     <div class="hud-btns">
       <div class="aim-seg" role="radiogroup" aria-label="Aim"><button data-aim="0" role="radio"><span></span></button><button data-aim="1" role="radio"><span>CENTER</span></button><button data-aim="2" role="radio"><span></span></button></div>
@@ -324,9 +326,9 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
   // 4 cards, all CSS/SVG (no assets). The boot screen cycles them while the park loads; on a
   // player's first visit game.js holds the boot screen for one full cycle (tap = skip).
   const TUT = [
-    { k: 'swipe', t: 'SWIPE TO SWING', d: 'Drag your finger <b>across the plate</b> as the pitch arrives.', s: 'Faster swipe = harder swing', art: `
-      <div class="tut-plate"><i class="tut-home"></i><i class="tut-path"></i><i class="tut-dot"></i><span class="tut-meter"><i></i><em>BAT SPEED</em></span></div>` },
-    { k: 'aim', t: 'AIM &amp; LOFT', d: 'Start your swipe <b>left, middle or right</b> to pull, go center or go oppo.', s: 'Swipe upward for loft', art: `
+    { k: 'flick', t: 'FLICK UP TO SWING', d: 'Flick your thumb <b>up the screen</b> as the pitch arrives.', s: 'Faster flick = farther ball', art: `
+      <div class="tut-plate tut-flick"><i class="tut-home"></i><i class="tut-path"></i><i class="tut-dot"></i><span class="tut-meter"><i></i><em>POWER</em></span></div>` },
+    { k: 'aim', t: 'AIM', d: 'Flick <b>straight up</b> for center field. Tilt the flick <b>left or right</b> to pull or go oppo.', s: 'Loft is automatic', art: `
       <div class="tut-lanes"><span class="tut-lane"><i></i>PULL</span><span class="tut-lane on"><i></i>CENTER</span><span class="tut-lane"><i></i>OPPO</span><i class="tut-up">${IC.arrow}</i></div>` },
     { k: 'time', t: 'TIME IT', d: 'Swing as the ball <b>reaches the plate</b>. Meet it in the ring.', s: 'Any swing that isn\'t a homer is an out', art: `
       <div class="tut-pitch"><i class="tut-ring"></i><i class="tut-ball"></i><span class="tut-tag">PERFECT</span></div>` },
@@ -369,7 +371,7 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
       <div class="modal-h"><h2>HOW TO PLAY</h2><button class="icon-btn" data-close="1" aria-label="Close">${IC.check}</button></div>
       <div class="tut tut-modal">${tutHTML()}</div>
       <div class="tut-nav"><button class="btn btn-ghost btn-md" data-tut="prev"><span>${IC.back}BACK</span></button><button class="btn btn-primary btn-md" data-tut="next"><span>NEXT</span></button></div>
-      <div class="modal-foot">PREFER A BUTTON? SETTINGS → SWING CONTROL</div></div>`;
+      <div class="modal-foot">PREFER A SIDEWAYS SWIPE OR A BUTTON? SETTINGS → SWING CONTROL</div></div>`;
     L.modal.classList.add('open');
     const m = L.modal.querySelector('.modal'), tut = m.querySelector('.tut');
     clearTimeout(T.timer); T.hold = false; tutShow(tut, 0);
@@ -648,9 +650,11 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
 
   // ------------------------------------------------ swing mode (swipe | button)
   function setSwingMode(mode) {
-    S.prefs.swing = mode === 'button' ? 'button' : 'swipe';
+    S.prefs.swing = mode === 'button' ? 'button' : mode === 'swipe' ? 'swipe' : 'flick';
     W.classList.toggle('mode-button', S.prefs.swing === 'button');
-    W.classList.toggle('mode-swipe', S.prefs.swing !== 'button');
+    W.classList.toggle('mode-swipe', S.prefs.swing === 'swipe');
+    W.classList.toggle('mode-flick', S.prefs.swing === 'flick');
+    if (H.hint) H.hint.textContent = S.prefs.swing === 'flick' ? 'FLICK UP TO SWING' : S.prefs.swing === 'swipe' ? 'SWIPE ACROSS THE PLATE' : 'TAP SWING';
     if (S.armed) coachMaybe();
   }
 
@@ -663,7 +667,9 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
     H.coach.className = `coach show c-${m} c-${natural}`;
     H.coachT.innerHTML = m === 'button'
       ? `${IC.bat}<span><b>TAP SWING</b> AS IT ARRIVES · PICK YOUR LANE</span>`
-      : `${IC.swipe}<span><b>SWIPE ACROSS THE PLATE</b> · FASTER = HARDER</span>`;
+      : m === 'flick'
+        ? `${IC.arrow}<span><b>FLICK UP</b> AS THE BALL ARRIVES · FASTER = FARTHER</span>`
+        : `${IC.swipe}<span><b>SWIPE ACROSS THE PLATE</b> · FASTER = HARDER</span>`;
   }
   function coachDone() {
     const m = S.prefs.swing; S.coach[m] = num(S.coach[m]) + 1; LS.set('wcd-coach-v2', S.coach);
@@ -760,8 +766,9 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
     if (SW.done || SW.id == null) return;
     const P = SW.pts, last = P[P.length - 1], S0 = shortSide();
     const dx = last.x - SW.x0, dy = last.y - SW.y0, D = Math.hypot(dx, dy);
+    const flick = S.prefs.swing === 'flick';
     if (SW.moveT == null) SW.moveT = moveStart();
-    if (SW.moveT == null || D < (final ? SWIPE.liftFrac : SWIPE.minFrac) * S0) return;
+    if (SW.moveT == null || D < (final ? (flick ? SWIPE.flickLiftFrac : SWIPE.liftFrac) : (flick ? SWIPE.flickMinFrac : SWIPE.minFrac)) * S0) return;
     const after = P.filter(p => p.t > SW.moveT).length, since = last.t - SW.moveT;
     if (!final && after < SWIPE.minSamples && since < SWIPE.maxWait) return;
     SW.done = true;
@@ -775,13 +782,15 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
     const vAvg = D / Math.max(8, since);
     const v = Math.max(vPeak, vAvg) * 1000 / S0;         // short sides per second
     const natural = S.bats === 'L' ? -1 : 1;             // +1 = left → right
-    const horiz = Math.abs(dx) >= 0.3 * D;
-    const reverse = horiz && Math.sign(dx) !== natural;
+    const horiz = !flick && Math.abs(dx) >= 0.3 * D;
+    const reverse = horiz && Math.sign(dx) !== natural;   // FLICK: any direction swings at full value
     let batSpeed = Math.pow(clamp(v / SWIPE.vMax, 0, 1), SWIPE.gamma) * (reverse ? SWIPE.reverseMul : 1);
     const ang = Math.atan2(-dy, Math.max(1e-6, Math.abs(dx))) * 180 / Math.PI;   // + = finger moving up the screen
-    const uppercut = Math.sign(ang) * clamp((Math.abs(ang) - SWIPE.upDead) / (SWIPE.upFull - SWIPE.upDead), 0, 1);
+    // FLICK: loft is automatic (0); aim = the flick's left/right tilt (straight up = center). SWIPE: angle = loft, start x = aim.
+    const uppercut = flick ? 0 : Math.sign(ang) * clamp((Math.abs(ang) - SWIPE.upDead) / (SWIPE.upFull - SWIPE.upDead), 0, 1);
+    const aim = flick ? clamp((dx / Math.max(1e-6, D)) / SWIPE.flickTilt, -1, 1) : aimFromX(SW.x0);
     TR.col = batSpeed >= TUNING.maxEffortAt ? '#ffc23a' : batSpeed >= 0.8 ? '#ff8a3a' : '#35d0ff'; TR.hot = clamp((batSpeed - 0.5) * 2, 0, 1);
-    doSwing({ aim: aimFromX(SW.x0), t: SW.moveT, batSpeed, uppercut, via: 'swipe', x: last.x,
+    doSwing({ aim, t: SW.moveT, batSpeed, uppercut, via: flick ? 'flick' : 'swipe', x: last.x,
       extra: { speed: Math.round(v * 100) / 100, dir: Math.sign(dx) || natural, natural: !reverse, recognizedAt: last.t, latency: Math.round(last.t - SW.moveT) } });
   }
   function pushSamples(e) {
@@ -804,11 +813,11 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
     SW.id = e.pointerId; SW.pts = [{ x: e.clientX, y: e.clientY, t }]; SW.x0 = e.clientX; SW.y0 = e.clientY; SW.moveT = null; SW.done = false; SW.armedAtDown = S.armed;
     trailBegin(e.clientX, e.clientY, t);
     if (!S.armed) emit('skip', {});
-    else setAim(aimFromX(e.clientX));
+    else if (S.prefs.swing !== 'flick') setAim(aimFromX(e.clientX));
   }, { passive: false });
   L.tap.addEventListener('pointermove', e => {
     if (!S.hudOn) return;
-    if (e.pointerId !== SW.id) { if (e.pointerType === 'mouse' && S.prefs.swing !== 'button' && !e.buttons) setAim(aimFromX(e.clientX)); return; }
+    if (e.pointerId !== SW.id) { if (e.pointerType === 'mouse' && S.prefs.swing === 'swipe' && !e.buttons) setAim(aimFromX(e.clientX)); return; }
     pushSamples(e); swipeEval(false);
   });
   const swipeUp = e => {
@@ -1128,8 +1137,8 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
       ${tog('music', 'MUSIC', IC.music, 'Ballpark organ between pitches')}
       ${tog('haptics', 'HAPTICS', IC.buzz, 'Vibration on contact')}</div>
       <div class="set-col">
-      <div class="set-row set-q"><span class="set-ic">${IC.swipe}</span><span class="set-t"><b>SWING CONTROL</b><small>Swipe across the plate, or a big SWING button</small></span></div>
-      <div class="seg seg2" role="radiogroup" aria-label="Swing control">${[['swipe', 'SWIPE'], ['button', 'BUTTON']].map(([k, l]) => `<button role="radio" data-sw="${k}" aria-checked="${P.swing === k}">${l}</button>`).join('')}</div>
+      <div class="set-row set-q"><span class="set-ic">${IC.swipe}</span><span class="set-t"><b>SWING CONTROL</b><small>Flick up (easiest), swipe across the plate, or a SWING button</small></span></div>
+      <div class="seg seg2" role="radiogroup" aria-label="Swing control">${[['flick', 'FLICK UP'], ['swipe', 'SWIPE'], ['button', 'BUTTON']].map(([k, l]) => `<button role="radio" data-sw="${k}" aria-checked="${P.swing === k}">${l}</button>`).join('')}</div>
       <div class="set-row set-q"><span class="set-ic">${IC.gfx}</span><span class="set-t"><b>GRAPHICS</b><small>Lower = smoother on older phones</small></span></div>
       <div class="seg" role="radiogroup" aria-label="Graphics quality">${['auto', 'high', 'medium', 'low'].map(q => `<button role="radio" data-q="${q}" aria-checked="${P.quality === q}">${q.toUpperCase()}</button>`).join('')}</div>
       <button class="btn btn-primary btn-md modal-done" data-close="1"><span>DONE</span></button>

@@ -14,7 +14,7 @@
 // field (1B) line. Direction on the ground for spray s: (sin s, 0, -cos s).
 // ============================================================================
 
-export const VERSION = '2.0.0';
+export const VERSION = '2.1.0';
 export const GAME_TITLE = 'WINDY CITY DERBY';
 export const OUTS_PER_ROUND = 10;
 
@@ -254,7 +254,7 @@ export const RUBBER = [0, 0.83, -60.5];
 // TUNING — sim + presentation constants shared across modules.
 // ---------------------------------------------------------------------------
 export const TUNING = {
-  pitchTimeScale: 1.75,     // real flight time x this = game flight time
+  pitchTimeScale: 1.9,      // real flight time x this = game flight time (v2.1: slower, easier to read)
   windupTime: 1.05,         // s from pitcher start to release (actors match this)
   swingLead: 0.12,          // s from swing start to bat-on-ball at the REFERENCE bat speed (button / space / swing() with no args)
   // v2 swipe swing (PLAY): batSpeed ∈ [0,1] from the swipe; the lead (swing start → contact frame) shrinks with speed.
@@ -265,7 +265,9 @@ export const TUNING = {
   maxEffortAt: 0.92,        // batSpeed ≥ this → "MAX EFFORT" flash
   batMph: [48, 82],         // displayed bat speed (mph) at batSpeed 0 / 1 (linear)
   contactZ: -1.2,           // ft — contact plane just in front of the plate
-  inputLatencyComp: 0.025,  // s credited back to every tap (touch pipeline latency)
+  inputLatencyComp: 0.045,  // s credited back to every tap (touch pipeline latency; iOS Safari touch → JS ≈ 40-60 ms)
+  assistWindow: 1.55,       // v2.1 "make it easier": every hitter's timing window × this
+  assistAim: 1.5,           // …and aim tolerance × this (mis-aimed swings still make good contact)
   eyeSlowFrac: 0.4,         // last 40% of flight is slowed for readBonus hitters…
   eyeSlowAmount: 0.18,      // …by up to 18% (x readBonus)
   ringShowFrac: 0.42,       // read ring appears after this fraction of flight (normal)

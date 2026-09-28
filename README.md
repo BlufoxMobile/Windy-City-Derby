@@ -16,7 +16,8 @@ North Side or Rate Field on the South Side), and see how far you can hit it befo
   | Blaze | Moonshot slugger | Sky-high launch, weak against breaking balls |
   | Nova | All-around | Balanced everything |
   | Skye | Clutch | Power grows with every straight homer |
-- **One tap swings.** Where your thumb lands aims the ball: pull, center or opposite field.
+- **Flick up to swing.** Flick your thumb up the screen as the pitch arrives — the faster the flick, the farther the ball.
+  Flick straight up for center field; tilt the flick left or right to pull or go oppo. (Settings offers a sideways-swipe mode and a SWING button too.)
   Timing and matching the pitch location (pull the inside pitch, go the other way on the outside one) decide the result.
 - **10 outs per round.** Any swing that isn't a homer is an out, and so is taking a strike. Taking a ball costs nothing.
 - **Pitches ramp up** from meatballs to fastballs, changeups, curveballs and sliders.

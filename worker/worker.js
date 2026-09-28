@@ -21,7 +21,7 @@
 // ============================================================================
 
 const GAME = 'windy-city-derby';
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 const CHAR_IDS = ['rocco', 'jett', 'dex', 'blaze', 'nova', 'skye'];
 const PARK_IDS = ['wrigley', 'rate'];
 const DISTRICTS = ['North Side', 'South Side', 'East Side', 'West Side', 'Big South'];

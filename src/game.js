@@ -39,8 +39,9 @@ export async function boot() {
   const root = document.getElementById('ui');
 
   // ---------------------------------------------------------------- settings
-  const settings = Object.assign({ sound: true, music: true, haptics: true, quality: 'auto', swing: 'swipe' }, LS.get('wcd-settings', {}));
-  if (settings.swing !== 'button') settings.swing = 'swipe';
+  const settings = Object.assign({ sound: true, music: true, haptics: true, quality: 'auto', swing: 'flick' }, LS.get('wcd-settings', {}));
+  // v2.1: FLICK (up) is the default. A saved 'swipe' only sticks if it was chosen in the v2.1 settings (swingV3).
+  if (settings.swing !== 'button' && !(settings.swing === 'swipe' && settings.swingV3)) settings.swing = 'flick';
   const profile = Object.assign({ name: '', district: '', charId: 'nova', parkId: 'wrigley' }, LS.get('wcd-profile', {}));
   if (!D.CHAR_BY_ID[profile.charId]) profile.charId = 'nova';
   if (!D.PARKS[profile.parkId]) profile.parkId = 'wrigley';
@@ -445,7 +446,8 @@ export async function boot() {
       case 'setting': case 'settings-change': case 'settings-close': {
         const before = settings.quality;
         for (const k of ['sound', 'music', 'haptics', 'quality', 'swing']) if (k in p) settings[k] = p[k];
-        if (settings.swing !== 'button') settings.swing = 'swipe';
+        if ('swing' in p) settings.swingV3 = true;
+        if (!['button', 'swipe', 'flick'].includes(settings.swing)) settings.swing = 'flick';
         LS.set('wcd-settings', settings);
         audio.setMuted?.(!settings.sound); audio.setMusicOn?.(settings.music);
         if (settings.quality !== before) { R.setQuality(qualityTier()); G.stadiumKey = ''; }
