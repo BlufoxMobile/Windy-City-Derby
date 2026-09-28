@@ -307,14 +307,86 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
           <h1 class="logo stg" style="--i:1"><span class="l1">WINDY CITY</span><span class="l2">DERBY</span><i class="logo-ball"></i></h1>
           <div class="boot-bar stg" style="--i:2"><i class="fill"></i></div>
           <div class="boot-row stg" style="--i:3"><span class="boot-lab"></span><span class="boot-pct"></span></div>
+          <div class="tut tut-boot stg" style="--i:4"><div class="tut-k">HOW TO PLAY</div>${tutHTML()}<div class="tut-skip">${IC.play}TAP TO PLAY</div></div>
         </div>`);
       S.bootEl = el;
+      const tut = el.querySelector('.tut'); T.laps = 0; T.hold = false; tutShow(tut, 0); tutAuto(tut, 3000);
+      tut.querySelector('.tut-dots').addEventListener('pointerdown', e => { const d = e.target.closest('i'); if (!d) return; e.stopPropagation(); tutShow(tut, +d.dataset.i); tutAuto(tut, 3000); });
     }
     const el = S.bootEl; if (!el) return;
     el.querySelector('.fill').style.transform = `scaleX(${p})`;
     el.querySelector('.boot-pct').textContent = `${Math.round(p * 100)}%`;
     el.querySelector('.boot-lab').textContent = String(label || (p >= 1 ? 'PLAY BALL' : 'LOADING')).toUpperCase().slice(0, 48);
     el.classList.toggle('done', p >= 1);
+  }
+
+  // ---- HOW TO PLAY (tutorial cards: boot carousel + title modal) --------------------
+  // 4 cards, all CSS/SVG (no assets). The boot screen cycles them while the park loads; on a
+  // player's first visit game.js holds the boot screen for one full cycle (tap = skip).
+  const TUT = [
+    { k: 'swipe', t: 'SWIPE TO SWING', d: 'Drag your finger <b>across the plate</b> as the pitch arrives.', s: 'Faster swipe = harder swing', art: `
+      <div class="tut-plate"><i class="tut-home"></i><i class="tut-path"></i><i class="tut-dot"></i><span class="tut-meter"><i></i><em>BAT SPEED</em></span></div>` },
+    { k: 'aim', t: 'AIM &amp; LOFT', d: 'Start your swipe <b>left, middle or right</b> to pull, go center or go oppo.', s: 'Swipe upward for loft', art: `
+      <div class="tut-lanes"><span class="tut-lane"><i></i>PULL</span><span class="tut-lane on"><i></i>CENTER</span><span class="tut-lane"><i></i>OPPO</span><i class="tut-up">${IC.arrow}</i></div>` },
+    { k: 'time', t: 'TIME IT', d: 'Swing as the ball <b>reaches the plate</b>. Meet it in the ring.', s: 'Any swing that isn\'t a homer is an out', art: `
+      <div class="tut-pitch"><i class="tut-ring"></i><i class="tut-ball"></i><span class="tut-tag">PERFECT</span></div>` },
+    { k: 'score', t: 'GO DEEP', d: '<b>10 outs</b> a round. Homers score their distance. <b>Back-to-back</b> multiplies.', s: '3 straight = THE WAVE · leave the park = the booth call', art: `
+      <div class="tut-score"><span><b>452</b>FT</span><span class="x"><b>×2</b>STREAK</span><span class="g"><b>OUT!</b>OF THE PARK</span></div>` },
+  ];
+  const tutCard = (c, i) => `<div class="tut-card" data-i="${i}"><div class="tut-art">${c.art}</div><div class="tut-txt"><h3>${c.t}</h3><p>${c.d}</p><small>${esc(c.s)}</small></div></div>`;
+  const tutHTML = extra => `<div class="tut-track">${TUT.map(tutCard).join('')}</div><div class="tut-dots">${TUT.map((_, i) => `<i data-i="${i}"></i>`).join('')}</div>${extra || ''}`;
+  const T = { el: null, i: 0, timer: 0, laps: 0, resolve: null, hold: false };
+  function tutShow(el, i) {
+    const n = TUT.length; T.i = ((i % n) + n) % n;
+    el.querySelectorAll('.tut-card').forEach(c => c.classList.toggle('on', +c.dataset.i === T.i));
+    el.querySelectorAll('.tut-dots i').forEach(d => d.classList.toggle('on', +d.dataset.i === T.i));
+    const nb = (el.closest('.modal') || el).querySelector('[data-tut="next"] span'); if (nb) nb.innerHTML = T.i === n - 1 ? `${IC.play}PLAY BALL` : 'NEXT';
+  }
+  function tutAuto(el, ms) {
+    clearTimeout(T.timer);
+    T.timer = setTimeout(() => {
+      if (!el.isConnected) return;
+      const last = T.i === TUT.length - 1;
+      if (last) { T.laps++; if (T.hold && T.resolve) { const r = T.resolve; T.resolve = null; r('auto'); return; } }
+      tutShow(el, T.i + 1); tutAuto(el, ms);
+    }, ms);
+  }
+  /** game.js (first visit): resolves when the carousel has played once, or on tap. */
+  function bootTutorial({ maxMs = 14000 } = {}) {
+    const el = S.bootEl; if (!el || S.screen !== 'boot' || !el.querySelector('.tut')) return Promise.resolve('none');
+    T.hold = true;
+    el.classList.add('tut-hold');
+    const skip = el.querySelector('.tut-skip'); if (skip) skip.classList.add('show');
+    return new Promise(res => {
+      T.resolve = res;
+      const done = why => { if (T.resolve) { T.resolve = null; res(why); } };
+      el.addEventListener('pointerdown', e => { if (e.target.closest('.tut-dots')) return; buzz(5); emit('sfx', { name: 'ui_confirm' }); done('tap'); }, { once: true });
+      later(() => done('timeout'), maxMs);
+    });
+  }
+  function howToPlay() {
+    L.modal.innerHTML = `<div class="modal-back" data-close="1"></div><div class="modal modal-tut" role="dialog" aria-modal="true" aria-label="How to play">
+      <div class="modal-h"><h2>HOW TO PLAY</h2><button class="icon-btn" data-close="1" aria-label="Close">${IC.check}</button></div>
+      <div class="tut tut-modal">${tutHTML()}</div>
+      <div class="tut-nav"><button class="btn btn-ghost btn-md" data-tut="prev"><span>${IC.back}BACK</span></button><button class="btn btn-primary btn-md" data-tut="next"><span>NEXT</span></button></div>
+      <div class="modal-foot">PREFER A BUTTON? SETTINGS → SWING CONTROL</div></div>`;
+    L.modal.classList.add('open');
+    const m = L.modal.querySelector('.modal'), tut = m.querySelector('.tut');
+    clearTimeout(T.timer); T.hold = false; tutShow(tut, 0);
+    m.addEventListener('click', e => {
+      const b = e.target.closest('[data-tut]'); const d = e.target.closest('.tut-dots i');
+      if (d) { tutShow(tut, +d.dataset.i); buzz(4); emit('sfx', { name: 'ui_tap' }); }
+      if (!b) return;
+      buzz(5); emit('sfx', { name: 'ui_tap' });
+      if (b.dataset.tut === 'prev') tutShow(tut, T.i - 1);
+      else if (T.i === TUT.length - 1) { closeModal(true); emit('sfx', { name: 'ui_confirm' }); }
+      else tutShow(tut, T.i + 1);
+    });
+    // swipe between cards
+    let sx = null;
+    tut.addEventListener('pointerdown', e => { sx = e.clientX; });
+    tut.addEventListener('pointerup', e => { if (sx == null) return; const dx = e.clientX - sx; sx = null; if (Math.abs(dx) > 36) { tutShow(tut, T.i + (dx < 0 ? 1 : -1)); buzz(4); } });
+    L.modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => { buzz(5); emit('sfx', { name: 'ui_back' }); closeModal(true); }));
   }
 
   // ---- title ----------------------------------------------------------------
@@ -338,6 +410,7 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
         ${dailyCard}
         <div class="title-row stg" style="--i:2">
           <button class="btn btn-ghost" data-act="board"><span>${IC.trophy}LEADERBOARD</span></button>
+          <button class="btn btn-ghost" data-act="howto"><span>${IC.swipe}HOW TO PLAY</span></button>
           ${bestChip}
           <button class="icon-btn title-gear" data-act="settings" aria-label="Settings">${IC.gear}</button>
         </div>
@@ -347,6 +420,7 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
       else if (act === 'daily') { S.flow = 'daily'; emit('daily', { date: daily?.date, parkId: daily?.parkId }); }
       else if (act === 'board') { leaderboard(null, { tab: 'today', district: '' }); emit('board', { tab: 'today', district: '' }); }
       else if (act === 'settings') emit('settings', {});
+      else if (act === 'howto') { buzz(5); emit('sfx', { name: 'ui_tap' }); howToPlay(); }
     });
   }
 
@@ -1084,7 +1158,7 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
   return {
     boot, title, nameEntry, characterSelect, parkSelect, intro, hud, hideHud, pitchCallout,
     aim: setAim, armInput, result, roundOver, leaderboard, toast, settings, hide,
-    /** v2 */ outOfPark, wave, setSwingMode, get swingMode() { return S.prefs.swing; }, get lastSwing() { return S.lastSwing || null; },
+    /** v2 */ outOfPark, wave, setSwingMode, bootTutorial, howToPlay, get swingMode() { return S.prefs.swing; }, get lastSwing() { return S.lastSwing || null; },
     /** extras (not in CONTRACT; safe to ignore) */
     get screen() { return S.screen; }, get aimValue() { return S.aim; }, el: W,
     dispose() { window.removeEventListener('keydown', onKey); timers.forEach(clearTimeout); W.remove(); },

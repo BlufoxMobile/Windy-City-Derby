@@ -917,3 +917,96 @@
 
 /* ---- reduced motion ---- */
 .wcd-rm *, .wcd-rm *::before, .wcd-rm *::after { animation-duration: .01ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+
+/* ---- HOW TO PLAY tutorial (boot carousel + title modal) ------------------------------------------ */
+.tut { position: relative; width: min(88vw, 400px); display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.tut-k { font: 800 11px/1 var(--fd); letter-spacing: .3em; color: var(--cyan); opacity: .9; }
+.tut-track { position: relative; width: 100%; height: 150px; }
+.tut-card { position: absolute; inset: 0; display: grid; grid-template-columns: 112px 1fr; gap: 12px; align-items: center; padding: 12px 14px 12px 12px; border-radius: 16px;
+  background: linear-gradient(180deg, rgba(20, 34, 72, .78), rgba(7, 12, 30, .86)); box-shadow: inset 0 0 0 1.5px var(--line2), inset 0 1px 0 rgba(255, 255, 255, .08), 0 10px 26px rgba(0, 0, 0, .4);
+  opacity: 0; transform: translateX(28px) scale(.98); pointer-events: none; transition: opacity .32s ease, transform .38s cubic-bezier(.16, .9, .24, 1); }
+.tut-card.on { opacity: 1; transform: none; pointer-events: auto; }
+.tut-art { position: relative; width: 112px; height: 118px; border-radius: 12px; overflow: hidden; background: radial-gradient(90% 70% at 50% 100%, #1c5a2e, #0b2418 70%); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06); }
+.tut-txt { min-width: 0; display: flex; flex-direction: column; gap: 6px; text-align: left; }
+.tut-txt h3, .tut-txt p, .tut-txt small { margin: 0; }
+.tut-txt h3 { font: italic 800 22px/1 var(--fd); letter-spacing: .04em; color: #fff; }
+.tut-txt p { font: 500 13px/1.3 var(--ft); color: #d6e2ff; }
+.tut-txt p b { color: #fff; font-weight: 800; }
+.tut-txt small { font: 800 10.5px/1.25 var(--fd); letter-spacing: .12em; color: var(--gold); }
+.tut-dots { display: flex; gap: 7px; padding: 4px 10px; }
+.tut-dots i { width: 8px; height: 8px; border-radius: 50%; background: rgba(255, 255, 255, .22); transition: background .25s, transform .25s; cursor: pointer; }
+.tut-dots i.on { background: var(--cyan); transform: scale(1.25); box-shadow: 0 0 10px rgba(53, 208, 255, .7); }
+.tut-skip { display: flex; align-items: center; gap: 6px; padding: 9px 16px; border-radius: 999px; font: 800 12px/1 var(--fd); letter-spacing: .18em; color: #fff;
+  background: rgba(53, 208, 255, .14); box-shadow: inset 0 0 0 1.5px rgba(53, 208, 255, .55); opacity: 0; transform: translateY(6px); transition: opacity .3s, transform .3s; animation: tutPulse 1.6s ease-in-out infinite; }
+.tut-skip svg { width: 14px; height: 14px; }
+.tut-skip.show { opacity: 1; transform: none; }
+.scr-boot.tut-hold .boot-lab { color: var(--gold); }
+@keyframes tutPulse { 50% { box-shadow: inset 0 0 0 1.5px rgba(53, 208, 255, 1), 0 0 18px rgba(53, 208, 255, .35); } }
+/* card 1: the swipe */
+.tut-plate { position: absolute; inset: 0; }
+.tut-home { position: absolute; left: 50%; bottom: 14px; width: 44px; height: 40px; transform: translateX(-50%); background: #f4f4f0; clip-path: polygon(0 0, 100% 0, 100% 55%, 50% 100%, 0 55%); opacity: .92; }
+.tut-path { position: absolute; left: 14px; right: 14px; top: 56px; height: 4px; border-radius: 3px; background: linear-gradient(90deg, rgba(53, 208, 255, 0), rgba(53, 208, 255, .8), #fff); animation: tutPath 1.9s cubic-bezier(.5, 0, .3, 1) infinite; }
+.tut-dot { position: absolute; top: 44px; left: 4px; width: 28px; height: 28px; border-radius: 50%; background: radial-gradient(circle, #fff 0 30%, rgba(53, 208, 255, .55) 34%, transparent 70%); animation: tutDot 1.9s cubic-bezier(.5, 0, .3, 1) infinite; }
+.tut-meter { position: absolute; left: 10px; right: 10px; top: 10px; height: 8px; border-radius: 4px; background: rgba(255, 255, 255, .14); overflow: visible; }
+.tut-meter i { position: absolute; inset: 0; border-radius: 4px; transform-origin: 0 50%; background: linear-gradient(90deg, var(--cyan), var(--gold) 70%, #ff5a3a); animation: tutMeter 1.9s cubic-bezier(.5, 0, .3, 1) infinite; }
+.tut-meter em { position: absolute; left: 0; top: 11px; font: 800 8.5px/1 var(--fd); letter-spacing: .2em; color: var(--dim); font-style: normal; }
+@keyframes tutPath { 0%, 18% { clip-path: inset(0 100% 0 0); opacity: 1; } 55% { clip-path: inset(0 0 0 0); opacity: 1; } 85%, 100% { clip-path: inset(0 0 0 0); opacity: 0; } }
+@keyframes tutDot { 0%, 10% { transform: translateX(0) scale(.7); opacity: 0; } 18% { opacity: 1; transform: translateX(0) scale(1); } 55% { transform: translateX(76px); opacity: 1; } 75%, 100% { transform: translateX(76px); opacity: 0; } }
+@keyframes tutMeter { 0%, 18% { transform: scaleX(0); } 58% { transform: scaleX(.92); } 85%, 100% { transform: scaleX(.92); opacity: .6; } }
+/* card 2: lanes */
+.tut-lanes { position: absolute; inset: 0; display: grid; grid-template-columns: 1fr 1fr 1fr; align-items: end; padding: 10px 8px 12px; gap: 5px; }
+.tut-lane { display: flex; flex-direction: column; align-items: center; gap: 6px; font: 800 9px/1 var(--fd); letter-spacing: .14em; color: var(--dim); }
+.tut-lane i { width: 100%; height: 62px; border-radius: 8px; background: rgba(255, 255, 255, .07); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12); }
+.tut-lane.on { color: #fff; }
+.tut-lane.on i { background: rgba(53, 208, 255, .22); box-shadow: inset 0 0 0 1.5px var(--cyan), 0 0 14px rgba(53, 208, 255, .35); animation: tutLane 3.6s ease-in-out infinite; }
+.tut-up { position: absolute; left: 50%; top: 8px; width: 22px; height: 22px; margin-left: -11px; color: var(--gold); animation: tutUp 1.6s ease-in-out infinite; }
+.tut-up svg { width: 100%; height: 100%; }
+@keyframes tutLane { 0%, 100% { transform: translateX(0); } 33% { transform: translateX(-104%); } 66% { transform: translateX(104%); } }
+@keyframes tutUp { 0%, 100% { transform: translateY(4px); opacity: .6; } 50% { transform: translateY(-4px); opacity: 1; } }
+/* card 3: timing */
+.tut-pitch { position: absolute; inset: 0; }
+.tut-ring { position: absolute; left: 50%; top: 58%; width: 46px; height: 46px; margin: -23px 0 0 -23px; border-radius: 50%; border: 2.5px solid rgba(255, 255, 255, .8); box-shadow: 0 0 12px rgba(53, 208, 255, .5), inset 0 0 8px rgba(53, 208, 255, .3); animation: tutRing 2.2s ease-in-out infinite; }
+.tut-ball { position: absolute; left: 50%; top: 58%; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: #fff; box-shadow: 0 0 8px #fff; animation: tutBall 2.2s cubic-bezier(.4, 0, .9, .6) infinite; }
+.tut-tag { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); padding: 4px 8px; border-radius: 999px; background: var(--gold); color: #1a1200; font: 800 10px/1 var(--fd); letter-spacing: .16em; opacity: 0; animation: tutTag 2.2s ease-out infinite; }
+@keyframes tutBall { 0% { transform: translate(-6px, -52px) scale(.25); opacity: 0; } 10% { opacity: 1; } 60% { transform: translate(0, 0) scale(1); } 68%, 100% { transform: translate(0, 0) scale(1); opacity: 0; } }
+@keyframes tutRing { 0%, 30% { transform: scale(1.35); opacity: .35; } 60% { transform: scale(1); opacity: 1; } 66% { transform: scale(1.15); border-color: var(--gold); } 80%, 100% { transform: scale(1); opacity: .6; } }
+@keyframes tutTag { 0%, 60% { opacity: 0; transform: translate(-50%, 6px); } 68%, 92% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; } }
+/* card 4: scoring chips */
+.tut-score { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 10px; }
+.tut-score span { display: flex; align-items: baseline; gap: 6px; padding: 5px 9px; border-radius: 8px; background: rgba(255, 255, 255, .08); font: 800 9px/1 var(--fd); letter-spacing: .14em; color: var(--dim); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .1); }
+.tut-score span b { font: italic 800 17px/1 var(--fd); color: #fff; }
+.tut-score .x b { color: var(--cyan); }
+.tut-score .g { background: rgba(255, 190, 40, .16); box-shadow: inset 0 0 0 1px rgba(255, 190, 40, .6); color: var(--gold); animation: tutGlow 1.8s ease-in-out infinite; }
+.tut-score .g b { color: var(--gold); }
+@keyframes tutGlow { 50% { box-shadow: inset 0 0 0 1px rgba(255, 190, 40, 1), 0 0 16px rgba(255, 190, 40, .45); } }
+/* modal version */
+.modal-tut { gap: 10px; }
+.tut-modal { width: 100%; }
+.tut-modal .tut-track { height: 158px; }
+.tut-nav { display: flex; gap: 10px; }
+.tut-nav .btn { flex: 1; }
+@media (orientation: landscape) and (max-height: 560px) {
+  .boot-c { gap: 8px; transform: none; }
+  .boot-c .logo { margin: 0; }
+  .tut-boot .tut-k { display: none; }
+  .tut-boot { width: min(70vw, 440px); gap: 5px; }
+  .tut-boot .tut-track { height: 100px; }
+  .tut-boot .tut-card { grid-template-columns: 84px 1fr; padding: 8px 10px; gap: 10px; }
+  .tut-boot .tut-art { width: 84px; height: 78px; transform-origin: 0 0; }
+  .tut-boot .tut-txt h3 { font-size: 17px; } .tut-boot .tut-txt p { font-size: 12px; } .tut-boot .tut-txt small { font-size: 9.5px; }
+  .tut-boot .tut-dots { padding: 0 10px; }
+  .tut-skip { padding: 6px 12px; font-size: 11px; }
+  .tut-plate .tut-dot { animation-name: tutDotS; } .tut-plate .tut-path { top: 40px; } .tut-plate .tut-dot { top: 28px; } .tut-home { width: 32px; height: 28px; bottom: 8px; }
+  .tut-lane i { height: 40px; } .tut-ring { width: 34px; height: 34px; margin: -17px 0 0 -17px; }
+}
+@media (orientation: landscape) and (max-height: 560px) {
+  .modal-tut { grid-template-columns: 1fr; width: min(100%, 560px); gap: 8px; }
+  .modal-tut .tut-track { height: 112px; }
+  .modal-tut .tut-card { grid-template-columns: 96px 1fr; padding: 8px 12px; }
+  .modal-tut .tut-art { width: 96px; height: 96px; }
+  .modal-tut .tut-txt h3 { font-size: 18px; } .modal-tut .tut-txt p { font-size: 12px; }
+  .modal-tut .tut-dots { padding: 0; }
+  .tut-nav .btn { min-height: 40px; font-size: 17px !important; }
+  .modal-tut .modal-foot { margin-top: 0; }
+}
+@keyframes tutDotS { 0%, 10% { transform: translateX(0) scale(.7); opacity: 0; } 18% { opacity: 1; transform: translateX(0) scale(1); } 55% { transform: translateX(50px); opacity: 1; } 75%, 100% { transform: translateX(50px); opacity: 0; } }

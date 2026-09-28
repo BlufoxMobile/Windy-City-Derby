@@ -95,9 +95,9 @@ export async function boot() {
     ...parkKeys(profile.parkId, dailyTod), `celebrate_${profile.charId}`, 'park_wrigley', 'park_rate',
     other,
   ];
-  let bootFrac = 0, uiRef = null;
+  let bootFrac = 0, uiRef = null, bootDone = false;
   const loading = loadAssets({ manifestUrl: 'assets/manifest.json', priority: prio,
-    onProgress: f => { if (G.state === 'boot' && uiRef) { bootFrac = Math.max(bootFrac, Math.min(0.92, f * 14)); uiRef.boot(bootFrac, 'LOADING THE PARK'); } } });
+    onProgress: f => { if (G.state === 'boot' && uiRef && !bootDone) { bootFrac = Math.max(bootFrac, Math.min(0.92, f * 14)); uiRef.boot(bootFrac, 'LOADING THE PARK'); } } });
   const A = loading.assets;
   loading.then(a => { if (DEBUG) console.log('[assets] receipt', a.receipt); });
 
@@ -577,8 +577,13 @@ export async function boot() {
   requestAnimationFrame(t => { last = t; frame(t); });
   // Wait only for the key art (capped) — everything else streams in behind the menus.
   await Promise.race([A.ready(orient), sleep(6000)]);
-  ui.boot(1, 'PLAY BALL');
+  bootDone = true; ui.boot(1, 'PLAY BALL');
   await sleep(450);
+  // First visit: let the HOW TO PLAY cards play once on the loading screen (tap skips). Later visits go straight in.
+  if (!params.has('autoplay') && !LS.get('wcd-tut-seen', false) && ui.bootTutorial) {
+    try { await ui.bootTutorial({ maxMs: 14000 }); } catch (e) { /* never block the title */ }
+    LS.set('wcd-tut-seen', true);
+  }
   if (params.has('autoplay')) {
     G.mode = params.get('autoplay') === 'daily' ? 'daily' : 'free';
     if (!profile.name) profile.name = params.get('name') || 'Tester';
