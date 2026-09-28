@@ -1,8 +1,17 @@
 // ============================================================================
-// WINDY CITY DERBY — asset loader. Owner: NET.
+// WINDY CITY DERBY — asset loader. Owner: ACTORS (v2; was NET).
 //
 //   loadAssets({ manifestUrl, onProgress, priority }) → Promise<Assets>
 //   Assets: { get(key), meta(key), texture(THREE, key, opts), receipt, …extras }
+//   v2 extras: buffer(key) → ArrayBuffer|null   (type:'audio' / 'binary' entries)
+//              model(key)  → Promise<gltf|null>  (type:'model' GLB, meshopt OK; cached)
+//              load(key)   → Promise<value|null> (starts a lazy key of any type)
+//              entry(key)  → manifest entry (loaded or not), state(key)
+//
+// Manifest entry types (v2): images as before;
+//   { "src": "models/nova.glb", "type": "model", "lazy": true }   — only fetched on model()/load()
+//   { "src": "vo/booth_1.m4a", "type": "audio" [, "lazy": true] } — raw bytes → buffer(key)
+// Lazy entries never count toward the boot progress bar / receipt.total.
 //
 // Design notes (the HARD LESSON from the last game):
 //   * Every image has its OWN stall window (default 8 s) that is reset every
@@ -290,9 +299,12 @@ async function run(cfg, store) {
   catch { base = null; }
   const entries = base ? await loadManifest(base.href, cfg.manifestTimeoutMs, cfg.log) : {};
   const keys = Object.keys(entries);
-  const seen = new Set(); const order = [];
-  for (const k of [...cfg.priority, ...keys]) if (entries[k] && !seen.has(k)) { seen.add(k); order.push(k); }
-  store.setManifest(entries, order, base);
+  const seen = new Set(); const order = [], lazy = [];
+  // a lazy key named in `priority` is fetched eagerly (e.g. the current fox's model), the rest wait for load()/model()
+  const prio = new Set(cfg.priority);
+  for (const k of [...cfg.priority, ...keys]) if (entries[k] && !seen.has(k)) { seen.add(k); (isLazy(entries[k]) && !prio.has(k) ? lazy : order).push(k); }
+  store.setManifest(entries, order, base, lazy);
+  store.cfg = cfg;
   if (!order.length) { store.finish(); return; }
 
   const bitmapOK = cfg.decoder !== 'image' && (await probeBitmapFlip());
@@ -304,16 +316,44 @@ async function run(cfg, store) {
   store.finish();
 }
 
+const entryKind = e => (e && (e.type === 'model' || /\.(glb|gltf)(?:[?#]|$)/i.test(e.src)) ? 'model'
+  : e && (e.type === 'audio' || e.type === 'binary' || /\.(mp3|m4a|aac|ogg|wav|bin)(?:[?#]|$)/i.test(e.src)) ? 'buffer' : 'image');
+const isLazy = e => !!(e && (e.lazy === true || entryKind(e) === 'model'));
+
+// GLTFLoader + meshopt decoder, imported on first use (keeps this module node-safe; esbuild inlines it)
+let gltfLoaderP = null;
+function gltfLoader() {
+  if (!gltfLoaderP) {
+    gltfLoaderP = (async () => {
+      const [{ GLTFLoader }, { MeshoptDecoder }] = await Promise.all([import('three/addons/loaders/GLTFLoader.js'), import('three/addons/libs/meshopt_decoder.module.js')]);
+      const L = new GLTFLoader();
+      try { await MeshoptDecoder.ready; L.setMeshoptDecoder(MeshoptDecoder); } catch (e) { console.warn('[assets] meshopt decoder unavailable', e); }
+      return L;
+    })();
+    gltfLoaderP.catch(() => { gltfLoaderP = null; });
+  }
+  return gltfLoaderP;
+}
+async function decodeModel(blob, url) {
+  const L = await gltfLoader();
+  const ab = await blob.arrayBuffer();
+  const base = String(url).replace(/[^/]*(?:[?#].*)?$/, '');
+  return await new Promise((res, rej) => L.parse(ab, base, res, rej));
+}
+
 async function loadOne(key, cfg, store, bitmapOK) {
   const rec = store.recs.get(key);
   rec.state = 'loading';
   const e = rec.entry;
+  const kind = entryKind(e);
   for (let attempt = 0; attempt <= cfg.retries; attempt++) {
     rec.attempts = attempt + 1;
     try {
       store.partial(key, 0);
       const blob = await fetchBytes(rec.url, { stallMs: cfg.stallMs, maxAttemptMs: cfg.maxAttemptMs, transport: cfg.transport, onBytes: (got, len) => { const exp = len || e.bytes || 0; store.partial(key, exp ? got / exp : 0.5); } });
       rec.bytes = blob.size;
+      if (kind === 'model') { const gltf = await decodeModel(blob, rec.url); store.okValue(key, gltf, blob); return; }
+      if (kind === 'buffer') { const ab = await blob.arrayBuffer(); store.okValue(key, ab, blob); return; }
       const dec = bitmapOK && cfg.isGL(key, e) ? await decodeBitmapFlipped(blob, e, cfg.maxDim) : await decodeImage(blob, cfg.maxDim);
       store.ok(key, dec, blob);
       return;
@@ -356,9 +396,9 @@ function createStore(cfg) {
 
   const store = {
     recs, receipt, t0: now(),
-    setManifest(entries, order, base) {
+    setManifest(entries, order, base, lazy = []) {
       total = order.length; receipt.total = total; manifestKnown = true;
-      for (const k of order) {
+      for (const k of [...order, ...lazy]) {
         const e = entries[k];
         let url = e.src;
         try {
@@ -367,23 +407,48 @@ function createStore(cfg) {
           if (ver != null && !u.searchParams.has('v') && u.protocol !== 'data:' && u.protocol !== 'blob:') u.searchParams.set('v', String(ver));
           url = u.href;
         } catch { /* keep raw */ }
-        recs.set(k, { key: k, entry: e, url, state: 'queued', src: null, flipped: false, w: 0, h: 0, blob: null, objUrl: null, natural: null, mirrored: null, attempts: 0, errors: [], waiters: [], bytes: 0 });
+        const isL = lazy.includes(k);
+        recs.set(k, { key: k, entry: e, url, state: isL ? 'lazy' : 'queued', lazy: isL, kind: entryKind(e), value: null, src: null, flipped: false, w: 0, h: 0, blob: null, objUrl: null, natural: null, mirrored: null, attempts: 0, errors: [], waiters: [], bytes: 0 });
       }
       resolveManifest();
+    },
+    /** non-image payload (gltf / ArrayBuffer) */
+    okValue(key, value, blob) {
+      const r = recs.get(key); Object.assign(r, { state: 'ok', value, blob: null });
+      receipt.bytes += blob && blob.size || 0;
+      if (!r.lazy) { partials.delete(key); doneN++; receipt.loaded++; emit(key, true); }
+      else receipt.lazyLoaded = (receipt.lazyLoaded || 0) + 1;
+      settle(r);
+    },
+    /** kick off a lazy key (idempotent); resolves when settled */
+    startLazy(key) {
+      const r = recs.get(key);
+      if (!r) return Promise.resolve(null);
+      if (r.state === 'lazy') {
+        r.state = 'loading';
+        const cfg = store.cfg || { retries: 1, stallMs: 8000, maxAttemptMs: 180000, transport: 'auto', maxDim: 4096, isGL: k => GL_KEY.test(k), log: true };
+        probeBitmapFlip().then(ok => loadOne(key, cfg, store, cfg.decoder !== 'image' && ok)).catch(e => { console.warn('[assets] lazy', key, e); store.fail(key); });
+      }
+      if (r.state === 'ok' || r.state === 'failed') return Promise.resolve(r.state === 'ok' ? (r.value || view(r)) : null);
+      return new Promise(res => r.waiters.push(() => res(r.state === 'ok' ? (r.value || view(r)) : null)));
     },
     partial(key, frac) { if (!finished && isFinite(frac)) { partials.set(key, Math.max(0, Math.min(0.98, frac))); emit(key, false); } },
     ok(key, dec, blob) {
       const r = recs.get(key); Object.assign(r, { state: 'ok', src: dec.src, flipped: !!dec.flipped, w: dec.w, h: dec.h, blob, objUrl: dec.objUrl || null });
-      partials.delete(key); doneN++; receipt.loaded++; receipt.bytes += blob.size || 0; emit(key, true); settle(r);
+      receipt.bytes += blob.size || 0;
+      if (!r.lazy) { partials.delete(key); doneN++; receipt.loaded++; emit(key, true); }
+      settle(r);
     },
     fail(key) {
-      const r = recs.get(key); r.state = 'failed'; partials.delete(key); doneN++;
+      const r = recs.get(key); r.state = 'failed';
+      if (r.lazy) { (receipt.lazyFailed || (receipt.lazyFailed = [])).push(key); settle(r); return; }
+      partials.delete(key); doneN++;
       receipt.failed.push(key); emit(key, true); settle(r);
     },
     finish() {
       if (finished) return; finished = true; manifestKnown = true; resolveManifest();
       receipt.ms = Math.round(now() - store.t0); receipt.done = true;
-      for (const r of recs.values()) if (r.state === 'queued' || r.state === 'loading') { r.state = 'failed'; if (!receipt.failed.includes(r.key)) receipt.failed.push(r.key); settle(r); }
+      for (const r of recs.values()) if (!r.lazy && (r.state === 'queued' || r.state === 'loading')) { r.state = 'failed'; if (!receipt.failed.includes(r.key)) receipt.failed.push(r.key); settle(r); }
       if (cfg.onProgress) { lastFrac = 1; try { cfg.onProgress(1, ''); } catch { /* ignore */ } }
       if (cfg.log) {
         const why = receipt.failed.map(k => { const r = recs.get(k); return r && r.errors.length ? `${k} [${r.errors.join(',')}]` : k; });
@@ -396,6 +461,7 @@ function createStore(cfg) {
   // natural-orientation drawable for get()
   function view(r) {
     if (!r || r.state !== 'ok') return null;
+    if (r.kind && r.kind !== 'image') return r.value;
     if (!r.flipped) return r.src;
     if (!r.natural) r.natural = canvasResize(r.src, r.w, r.h, { flipV: true }) || r.src;
     return r.natural;
@@ -415,13 +481,33 @@ function createStore(cfg) {
     r.mirrored = c; return c;
   }
 
+  const whenManifest = (key, fn) => {
+    const r = recs.get(key);
+    if (r) return fn(r);
+    return manifestKnown || finished ? Promise.resolve(null) : manifestPromise.then(() => (recs.has(key) ? fn(recs.get(key)) : null));
+  };
   const api = {
     /** Decoded image (HTMLImageElement | HTMLCanvasElement | ImageBitmap) in natural orientation, or null. */
-    get(key) { return view(recs.get(key)); },
+    get(key) { const r = recs.get(key); return r && r.kind !== 'image' ? null : view(r); },
     /** Manifest entry for a LOADED key (w,h,frames,fw,fh,anchor,heightFt,contactFrame,horizon,…) or null. */
     meta(key) { const r = recs.get(key); return r && r.state === 'ok' ? r.entry : null; },
+    /** Manifest entry whether or not it has loaded (lazy keys included), or null. */
+    entry(key) { const r = recs.get(key); return r ? r.entry : null; },
+    /** 'lazy'|'queued'|'loading'|'ok'|'failed'|null */
+    state(key) { const r = recs.get(key); return r ? r.state : null; },
     /** true if the key loaded. */
     has(key) { const r = recs.get(key); return !!r && r.state === 'ok'; },
+    /** Raw bytes of an audio/binary entry (null until loaded; a lazy entry starts loading on first call). */
+    buffer(key) {
+      const r = recs.get(key); if (!r) return null;
+      if (r.state === 'ok') return r.kind === 'buffer' ? r.value : null;
+      if (r.state === 'lazy' && r.kind === 'buffer') store.startLazy(key);
+      return null;
+    },
+    /** Promise<gltf|null> for a type:'model' entry (GLB). Starts the download on first call; cached. Never rejects. */
+    model(key) { return whenManifest(key, r => (r.kind === 'model' ? store.startLazy(key) : null)).catch(() => null); },
+    /** Promise<value|null>: start (if lazy) and await any key — image, buffer or model. */
+    load(key) { return whenManifest(key, r => (r.lazy ? store.startLazy(key) : api.ready(key))).catch(() => null); },
     /** Decoded pixel size actually held (after any >4096 downscale). */
     size(key) { const r = recs.get(key); return r && r.state === 'ok' ? { w: r.w, h: r.h } : null; },
     /** A URL usable in <img src> / CSS background-image (blob: URL of the downloaded bytes), or null. */
@@ -434,6 +520,7 @@ function createStore(cfg) {
     ready(key) {
       const r = recs.get(key);
       if (!r) return manifestKnown || finished ? Promise.resolve(null) : manifestPromise.then(() => (recs.has(key) ? api.ready(key) : null));
+      if (r.lazy && r.state === 'lazy') return store.startLazy(key);
       if (r.state === 'ok' || r.state === 'failed') return Promise.resolve(view(r));
       return new Promise(res => r.waiters.push(res));
     },
@@ -446,7 +533,7 @@ function createStore(cfg) {
      */
     texture(THREE, key, opts = {}) {
       const r = recs.get(key);
-      if (!THREE || !r || r.state !== 'ok') return null;
+      if (!THREE || !r || r.state !== 'ok' || (r.kind && r.kind !== 'image') || !r.src) return null;
       const o = opts || {};
       const rep = Array.isArray(o.repeat) ? [+o.repeat[0] || 1, +(o.repeat[1] ?? o.repeat[0]) || 1] : typeof o.repeat === 'number' ? [o.repeat, o.repeat] : null;
       const srgb = o.srgb !== false; const mirror = !!o.mirror;

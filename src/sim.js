@@ -15,7 +15,7 @@
 // ============================================================================
 import {
   VERSION, OUTS_PER_ROUND, CHAR_BY_ID, CHARACTERS, PARKS, PITCHES, BREAKING, ZONE, RELEASE, TUNING, WEATHER,
-  pitchMix, rampAt, fenceDistance, surfaceHeight, scoreboardDistance, classifyLanding, hashString, makeRng,
+  pitchMix, rampAt, fenceDistance, surfaceHeight, scoreboardDistance, classifyLanding, isOutOfPark, hashString, makeRng,
 } from './data.js';
 
 // ---------------------------------------------------------------------------
@@ -25,10 +25,10 @@ import {
 // can read them. Game code must treat it as read-only.
 // ---------------------------------------------------------------------------
 const K = {
-  // --- ball flight (calibrated: 100@28≈370, 105@28≈405, 110@28≈440, 115@30≈475, 95@25≈320) ---
+  // --- ball flight (v2 calibration, Statcast-like top end: 95@25≈326, 100@28≈367, 105@28≈400, 110@28≈433, 115@30≈464, 119@28≈491) ---
   dragK: 0.00172,       // quadratic drag (1/ft): a = −cd·|v_air|·v_air
   dragV: 0.75,          // cd × (1 + dragV·(1 − airspeed/100 mph)), clamped 0.45..1.8 (drag-crisis-like)
-  dragEvExp: 0.64,      // cd × (EV/100)^−dragEvExp — squarely-hit balls carry disproportionately
+  dragEvExp: 0.3,       // cd × (EV/100)^−dragEvExp — squarely-hit balls carry a bit better (v1 0.64 over-carried 115+ mph)
   liftK: 0.00079,       // backspin lift (1/ft): a = liftK·spin·|v_air|² ⟂ v, in the vertical plane
   liftEvExp: 2.5,       // spin ∝ (EV/100)^liftEvExp
   liftLa: 0.03,         // spin × (1 + liftLa·(launch − 28°)), clamped 0.5..1.5
@@ -51,7 +51,7 @@ const K = {
   // idealAim() = the POWER aim inside the band: aimMargin in from the pull edge for pitches with
   // i ≥ aimSplit, in from the oppo edge otherwise (pull the middle-in pitch, go oppo with the away one).
   bandSlope: 1.35, bandW: 0.87, aimMargin: 0.24, aimSplit: 0, aimK: 0.63,
-  qPow: 1.26,           // EV = evMin + (evMax − evMin)·Q^qPow + pitch EV + noise (+ Skye's streak EV)
+  qPow: 0.6,            // EV = evMin + (evMax − evMin)·Q^qPow + pitch EV (+ Skye's streak EV) + evBoost, then the knee (below)
   speedEv: 0.09,        // pitch EV: +mph per pitch-mph above 60 (fastballs come off the bat harder) …
   cookieEv: 2.7,        // … except a meatball, which sits up there to be crushed: flat +cookieEv
   evNoise: 0.5,         // mph sd at perfect contact (× (1 + 2.5·(1 − Q)))
@@ -66,9 +66,25 @@ const K = {
   sprayPerAim: 28,      // deg of spray per unit of aim
   sprayTiming: 7.2,     // deg of pull (early) / oppo (late) per window of timing error
   sprayNoise: 2.5,      // deg sd at perfect contact (+ 7·(1 − Q))
-  streakQPow: 4.6,      // Skye: streak EV × Q^streakQPow (the extra power shows on squared-up swings)
+  streakQPow: 4.6,      // Skye: streak EV × Q^streakQPow (the extra power shows on squared-up swings) …
+  streakPost: 0.5,      // … × streakPost, added after the evKnee compression (so a 5-homer heater is ~+8.75 mph)
   chaseWhiff: 0.84,     // extra whiff probability per ft outside the zone (beyond 0.08 ft), cap 0.65
   sweetQ: 0.84, solidQ: 0.6,
+  // --- v2 bat speed (swipe) — batSpeed b ∈ [0,1], reference TUNING.batSpeedRef (button = 0.72) ---
+  //   timing window & aim tolerance × (1 − winSpeed·(b − ref)) / (1 − aimSpeed·(b − ref)): a max-effort swing is
+  //   less forgiving, a lazy one more. EV = knee(evMin' + (evMax − evMin')·Q^qPow + pitch + streak), then
+  //   − evSlow·s^evSlowPow below the reference (s = (ref − b)/ref; lazy swings make weak contact; evMin' = evMin − evSlowMin·s^evSlowPow),
+  //   + evFast·h·Q² above it (h = (b − ref)/(1 − ref) ∈ [0,1]) plus evNoiseHard·h·(evMax − evMin)/evNoiseRange mph
+  //   of extra EV sd: muscling up is boom or bust, more so for the free swingers.
+  winSpeed: 0.35, aimSpeed: 0.2, evFast: 1.5,
+  evSlow: 24, evSlowMin: 14, evSlowPow: 1.8,   // lazy swing: − evSlow·s^evSlowPow mph (s = (ref − b)/ref): b .55 → −1.5, .3 → −8.8, 0 → −24
+  evNoiseHard: 2.2, evNoiseRange: 40, evNoisePow: 1.5,   // hard-swing EV sd = evNoiseHard·h·clamp(((evMax−evMin)/evNoiseRange)^evNoisePow, .5, 1.5)
+  evTail: 3, evTailAt: 1.5,  // … plus a right tail hardSd·evTail·max(0, g − evTailAt)²·Q: the rare max-effort bomb
+  evBoost: 2,           // flat mph added before the knee (keeps the homer rate up while the knee trims the monsters)
+  uppercutLaunch: 7,    // deg of launch per unit of uppercut (swipe angle): loft a low pitch, stay level on a high one
+  optLaunch: 29,        // the launch angle bots aim their uppercut at
+  evKnee: 104.5, evKneeGain: 0.4, // EV above evKnee counts × evKneeGain — out-of-the-park stays special (tools/sim-bots.mjs --oop)
+  evCap: 124,           // hard cap on exit velocity (keeps every homer ≤ TUNING.maxHomerFt in any conditions)
   perfectFrac: 0.42,    // |err| ≤ perfectFrac·window → PERFECT
   earlyFrac: 1.5,       // |err| ≤ earlyFrac·window → EARLY / LATE, beyond → WAY EARLY / WAY LATE
 };
@@ -112,12 +128,14 @@ export function normalizeConditions(c) {
  *   apex:[x,y,z], landing:[x,y,z] (first impact: field / wall / seats / board), rest:[x,y,z],
  *   cleared  — crossed the fence radius above fenceH + 0.25 (a home run if fair),
  *   wall     — hit the fence below the top (an out),
- *   hitBoard, clearedBoard — CF scoreboard / video board: hit its face (or top) / flew over it,
+ *   hitBoard, clearedBoard — CF scoreboard / big board: hit its face (or top) / flew over it,
+ *   videoBoard — id of the PARKS[p].videoBoards entry the ball came back off (null if none),
+ *   fanDeck  — (Rate) came down on / into the Fan Deck,
  *   fenceT   — s after contact when the ball crossed the fence radius (null if it never did),
  *   fenceSpray, fenceY — spray angle and height at that moment,
  *   distance — projected horizontal distance where the flight would reach y = 0 (math continued
  *              through stands/boards), carry — horizontal distance of the first impact,
- *   hangTime — s to first impact, event: 'field'|'wall'|'stands'|'face'|'board'|'boardTop'|'timeout',
+ *   hangTime — s to first impact, event: 'field'|'wall'|'stands'|'face'|'board'|'boardTop'|'vboard'|'deck'|'deckFace'|'timeout',
  *   landSpray, restSpray, restR }
  * opts.samples === false skips the point array and the post-impact roll (fast path for bots).
  */
@@ -136,6 +154,8 @@ export function simulateFlight(parkId, { exitVelo, launch, spray, conditions, fr
   const wx = Math.sin(cond.wind.dir * DEG) * wmag, wz = -Math.cos(cond.wind.dir * DEG) * wmag;
   const fenceTop = P.fenceH + 0.25;
   const sb = P.scoreboard;
+  const vbs = P.videoBoards || [];   // video boards on top of the back of the bleachers (bounce back)
+  const fd = P.fanDeck || null;      // Rate Field's Fan Deck: a raised deck (box) above the CF batter's eye
 
   const v0 = ev * MPH;
   const la = launch * DEG, sp = spray * DEG;
@@ -168,6 +188,7 @@ export function simulateFlight(parkId, { exitVelo, launch, spray, conditions, fr
   let t = 0, n = 0;
   let apex = [x0, y0, z0];
   let fenceT = null, fenceSpray = null, fenceY = null, cleared = false, wall = false, hitBoard = false, clearedBoard = false;
+  let videoBoard = null, fanDeck = false;
   let event = null, evState = null, evT = 0, distance = null;
   const maxT = TUNING.maxFlightTime;
 
@@ -203,6 +224,39 @@ export function simulateFlight(parkId, { exitVelo, launch, spray, conditions, fr
       }
     }
     if (cleared) {
+      // (a2) video boards atop the back of the bleachers: anything that reaches one below its top comes back off it
+      if (vbs.length) {
+        const g0 = r0 - (fr0 + P.stands.depth), g1 = r1 - (fr1 + P.stands.depth);
+        if (g0 < 0 && g1 >= 0) {
+          const f = clamp(-g0 / (g1 - g0 || 1e-9), 0, 1);
+          const cx = lerp(px, st[0], f), cz = lerp(pz, st[2], f), yc = lerp(py, st[1], f), sc = sprayOf(cx, cz);
+          const vb = vbs.find(b => sc >= b.spray[0] && sc <= b.spray[1]);
+          if (vb && yc <= vb.top) {
+            videoBoard = vb.id; event = 'vboard'; evT = t - dt + f * dt;
+            const rr = Math.hypot(cx, cz) || 1, k = (fenceDistance(parkId, sc) + P.stands.depth - 0.3) / rr;
+            evState = [cx * k, yc, cz * k, st[3], st[4], st[5]];
+            continue;
+          }
+        }
+      }
+      // (a3) Rate Field Fan Deck: into its front face, or down onto the deck
+      if (fd && s1 >= fd.spray[0] && s1 <= fd.spray[1]) {
+        const d0 = r0 - fr0, d1 = r1 - fr1;
+        if (d0 < fd.d[0] && d1 >= fd.d[0]) {
+          const f = clamp((fd.d[0] - d0) / (d1 - d0 || 1e-9), 0, 1), yc = lerp(py, st[1], f);
+          if (yc <= fd.h) {
+            fanDeck = true; event = 'deckFace'; evT = t - dt + f * dt;
+            const cx = lerp(px, st[0], f), cz = lerp(pz, st[2], f), rr = Math.hypot(cx, cz) || 1, k = (fenceDistance(parkId, sprayOf(cx, cz)) + fd.d[0] - 0.3) / rr;
+            evState = [cx * k, yc, cz * k, st[3], st[4], st[5]];
+            continue;
+          }
+        }
+        if (d1 >= fd.d[0] && d1 <= fd.d[1] && st[1] <= fd.h && st[4] < 0) {
+          fanDeck = true; event = 'deck'; evT = t;
+          evState = [st[0], fd.h + K.ballR * 0.5, st[2], 0, 0, 0];
+          continue;
+        }
+      }
       // (b) CF scoreboard: front face, or over it (then maybe down onto its top)
       if (sb && s1 >= sb.spray[0] && s1 <= sb.spray[1]) {
         const rb = scoreboardDistance(parkId, s1);
@@ -259,9 +313,9 @@ export function simulateFlight(parkId, { exitVelo, launch, spray, conditions, fr
   // ---- phase B: after the first impact — bounce / roll / drop off a wall ----
   const s = evState.slice();
   let tb = evT;
-  const needB = event === 'face' || (out && (event === 'field' || event === 'wall' || event === 'board'));
+  const needB = event === 'face' || (out && (event === 'field' || event === 'wall' || event === 'board' || event === 'vboard' || event === 'deckFace'));
   if (needB) {
-    if (event === 'wall' || event === 'board' || event === 'face') { // reflect the outward component, damp the rest
+    if (event === 'wall' || event === 'board' || event === 'face' || event === 'vboard' || event === 'deckFace') { // reflect the outward component, damp the rest
       const rr = Math.hypot(s[0], s[2]) || 1, ux = s[0] / rr, uz = s[2] / rr;
       const vr = s[3] * ux + s[5] * uz;
       if (vr > 0) { s[3] -= (1 + K.bounceWall) * vr * ux; s[5] -= (1 + K.bounceWall) * vr * uz; }
@@ -310,7 +364,7 @@ export function simulateFlight(parkId, { exitVelo, launch, spray, conditions, fr
   return {
     pts: out ? Float32Array.from(out) : null,
     apex, landing, rest,
-    cleared, wall, hitBoard, clearedBoard, fenceT, fenceSpray, fenceY,
+    cleared, wall, hitBoard, clearedBoard, videoBoard, fanDeck, fenceT, fenceSpray, fenceY,
     distance, carry: Math.hypot(landing[0], landing[2]), hangTime: evT, event,
     landSpray: sprayOf(landing[0], landing[2]),
     restSpray: sprayOf(rest[0], rest[2]), restR: Math.hypot(rest[0], rest[2]),
@@ -425,7 +479,7 @@ function buildPitch(core, char) {
     ring: { showAt, preLoc, trueLoc: [px, py], snapAt },
     // extras (not in CONTRACT; safe to ignore):
     tArrive,                      // game s since release when the ball reaches TUNING.contactZ
-    perfectTapT: tArrive + TUNING.inputLatencyComp - TUNING.swingLead, // raw tapT that gives timingErr 0
+    perfectTapT: tArrive + TUNING.inputLatencyComp - TUNING.swingLead, // raw tapT that gives timingErr 0 (at the reference bat speed)
     breaking: BREAKING.has(type), color: T.color,
   };
 }
@@ -433,8 +487,27 @@ function buildPitch(core, char) {
 /** Pitch preview for (seed, n) without a Round — {n,type,mph,px,py,inZone} (tests, daily preview). */
 export function pitchAt(seed, n) { return genPitchCore(seed, n); }
 
-/** The raw tapT (game s since release) that produces a zero timing error on this pitch. */
-export function perfectTap(pitch) { return pitch.tArrive + TUNING.inputLatencyComp - TUNING.swingLead; }
+/** The raw swing-start tapT (game s since release) that produces a zero timing error on this pitch at batSpeed b. */
+export function perfectTap(pitch, batSpeed = TUNING.batSpeedRef) { return pitch.tArrive + TUNING.inputLatencyComp - swingLeadFor(batSpeed); }
+
+/**
+ * Seconds from swing START to bat-on-ball for bat speed b ∈ [0,1] (a fast swing reaches the zone sooner).
+ * Piecewise-linear through (0, swingLeadSlow) (batSpeedRef, swingLead) (1, swingLeadFast): 0.20 → 0.12 → 0.09 s.
+ */
+export function swingLeadFor(batSpeed = TUNING.batSpeedRef) {
+  const b = clamp(Number.isFinite(+batSpeed) ? +batSpeed : TUNING.batSpeedRef, 0, 1), r = TUNING.batSpeedRef;
+  return b <= r ? lerp(TUNING.swingLeadSlow, TUNING.swingLead, b / r) : lerp(TUNING.swingLead, TUNING.swingLeadFast, (b - r) / (1 - r));
+}
+/** Displayed bat speed in mph for b ∈ [0,1] (TUNING.batMph, linear). */
+export function batSpeedMph(batSpeed) { const [a, c] = TUNING.batMph; return Math.round(lerp(a, c, clamp(+batSpeed || 0, 0, 1))); }
+
+/** The uppercut (−1..1) a smart hitter uses on a pitch at height py: cancels the pitch-height launch shift. */
+export function idealUppercut(who, py, type = 'fastball') {
+  const ch = charOf(who); if (!ch) return 0;
+  const tol = aimTolFor(ch, type);
+  const shift = (py - ZONE_CY) * K.heightLaunch * Math.pow(0.85 / tol, K.heightTolPow);
+  return clamp((K.optLaunch - ch.swing.launch - shift) / K.uppercutLaunch, -1, 1);
+}
 
 /** How far inside a plate x is for a batter side: +1 = inside edge of the zone, −1 = outside edge. */
 export function insideness(bats, px) { return clamp((bats === 'R' ? -1 : 1) * (px - ZONE_CX) / ZONE_HX, -1.6, 1.6); }
@@ -470,18 +543,22 @@ export function aimBand(who, px, type = 'fastball') {
 // ============================================================================
 // SWING MODEL
 // ============================================================================
-function swingOutcome(char, park, cond, pitch, tapT, aim, streak, seed, samples) {
+function swingOutcome(char, park, cond, pitch, tapT, aim, streak, seed, samples, batSpeed, uppercut) {
   const S = char.swing;
   const rng = makeRng(hashString(`wcd:swing:${seed}:${pitch.n}`)); // outcome-noise stream (seed + n)
   const uWhiff = rng(), gEv = gauss(rng), gLa = gauss(rng), gSp = gauss(rng), gSide = gauss(rng);
 
   const pullSign = char.bats === 'R' ? -1 : 1;
   const brk = BREAKING.has(pitch.type);
-  const w = S.window * (brk ? S.breakWindowMul : 1);
-  const aimTol = S.aimTol * (brk ? S.breakWindowMul : 1);
+  const bs = clamp(Number.isFinite(+batSpeed) ? +batSpeed : TUNING.batSpeedRef, 0, 1);
+  const uc = clamp(Number.isFinite(+uppercut) ? +uppercut : 0, -1, 1);
+  const db = bs - TUNING.batSpeedRef;
+  const leadT = swingLeadFor(bs);
+  const w = S.window * (brk ? S.breakWindowMul : 1) * clamp(1 - K.winSpeed * db, 0.7, 1.4);
+  const aimTol = S.aimTol * (brk ? S.breakWindowMul : 1) * clamp(1 - K.aimSpeed * db, 0.8, 1.25);
   aim = clamp(Number.isFinite(aim) ? aim : 0, -1, 1);
   const tArrive = pitch.tArrive != null ? pitch.tArrive : pitch.flightTime * (TUNING.contactZ - RELEASE[2]) / -RELEASE[2];
-  const contactT = (Number.isFinite(tapT) ? tapT : -99) - TUNING.inputLatencyComp + TUNING.swingLead;
+  const contactT = (Number.isFinite(tapT) ? tapT : -99) - TUNING.inputLatencyComp + leadT;
   const timingErr = contactT - tArrive;          // + = late
   const e = timingErr / w, ae = Math.abs(e);
   const timingLabel = ae <= K.perfectFrac ? 'PERFECT' : ae <= K.earlyFrac ? (e < 0 ? 'EARLY' : 'LATE') : (e < 0 ? 'WAY EARLY' : 'WAY LATE');
@@ -490,7 +567,8 @@ function swingOutcome(char, park, cond, pitch, tapT, aim, streak, seed, samples)
   // posAt(contactT) === contactPos === the first path sample (rawContactT is the unclamped swing time).
   const tc = clamp(contactT, tArrive - 0.06, tArrive + 0.05);
   const contactPos = pitch.posAt(tc);
-  const base = { swung: true, timingErr, timingLabel, contactT: tc, rawContactT: contactT, contactPos, n: pitch.n, aim };
+  const base = { swung: true, timingErr, timingLabel, contactT: tc, rawContactT: contactT, contactPos, n: pitch.n, aim,
+    batSpeed: bs, batMph: batSpeedMph(bs), leadT, uppercut: uc, maxEffort: bs >= TUNING.maxEffortAt, outOfPark: false };
 
   // ---- whiff: way off on timing, or chasing well out of the zone ----
   const outDist = Math.hypot(Math.max(0, Math.abs(px - ZONE_CX) - ZONE_HX), Math.max(0, ZONE.y[0] - py, py - ZONE.y[1]));
@@ -514,9 +592,19 @@ function swingOutcome(char, park, cond, pitch, tapT, aim, streak, seed, samples)
   // ---- exit velocity (Skye's streak power needs a good swing to show) ----
   const streakEv = S.streakEv ? Math.min(streak * S.streakEv, S.streakEvCap) * Math.pow(Q, K.streakQPow) : 0;
   const pitchEv = pitch.type === 'meatball' ? K.cookieEv : Math.max(0, pitch.mph - 60) * K.speedEv;
-  let exitVelo = S.evMin + (S.evMax - S.evMin) * Math.pow(Q, K.qPow) + pitchEv
-    + gEv * K.evNoise * (1 + 2.5 * (1 - Q)) + streakEv;
-  exitVelo = clamp(exitVelo, 35, 125);
+  // bat speed: a lazy swing lowers ceiling and floor; the top end is compressed above evKnee (monster shots stay rare and
+  // the park geometry honest); a hard swing then adds EV on good contact plus extra variance (muscling up = boom or bust)
+  const slow = Math.max(0, -db) / TUNING.batSpeedRef, hard = Math.max(0, db) / (1 - TUNING.batSpeedRef); // both 0..1
+  const soft = Math.pow(slow, K.evSlowPow);   // a slightly soft swipe barely matters, a lazy flick really does
+  const evLow = S.evMin - K.evSlowMin * soft;
+  let exitVelo = evLow + (S.evMax - evLow) * Math.pow(Q, K.qPow) + pitchEv + K.evBoost;
+  if (exitVelo > K.evKnee) exitVelo = K.evKnee + (exitVelo - K.evKnee) * K.evKneeGain;
+  exitVelo += streakEv * K.streakPost;   // Skye's heat rides on top of the knee
+  const hardSd = K.evNoiseHard * hard * clamp(((S.evMax - S.evMin) / K.evNoiseRange) ** K.evNoisePow, 0.5, 1.5);
+  exitVelo += K.evFast * hard * Q * Q - K.evSlow * soft
+    + gEv * (K.evNoise * (1 + 2.5 * (1 - Q)) + hardSd)
+    + hardSd * K.evTail * Math.max(0, gEv - K.evTailAt) ** 2 * Q;   // the rare "got ALL of it" max-effort bomb
+  exitVelo = clamp(exitVelo, 35, K.evCap);
 
   // ---- launch: base + pitch height + vertical mis-hit (high pitch → under it, low → topped) ----
   const hRel = py - ZONE_CY;
@@ -526,7 +614,7 @@ function swingOutcome(char, park, cond, pitch, tapT, aim, streak, seed, samples)
   const qMiss = Math.pow(qt, 1 - K.missMix) * Math.pow(Math.exp(-((timingErr / K.missWindow) ** 2)), K.missMix) * qa * qh;
   const miss = Math.pow(1 - qMiss, K.missPow) * K.missLaunch;
   // (contact hitters — big aimTol — match their swing plane to the pitch height better)
-  let launch = S.launch + hRel * K.heightLaunch * Math.pow(0.85 / aimTol, K.heightTolPow) + sideSign * miss + gLa * (K.launchNoise + 6 * (1 - Q));
+  let launch = S.launch + hRel * K.heightLaunch * Math.pow(0.85 / aimTol, K.heightTolPow) + uc * K.uppercutLaunch + sideSign * miss + gLa * (K.launchNoise + 6 * (1 - Q));
   launch = clamp(launch, -25, 78);
 
   // ---- spray: aim + timing (early pulls, late goes the other way) + noise ----
@@ -548,8 +636,8 @@ function swingOutcome(char, park, cond, pitch, tapT, aim, streak, seed, samples)
     ...base, kind: b.kind, quality: Q, contact,
     exitVelo: round1(exitVelo), launch: round1(launch), spray: round1(spray),
     distance: b.distance, hangTime: f.hangTime,
-    path: { pts: f.pts, apex: f.apex, landing: f.landing, rest: f.rest, hitBoard: f.hitBoard, clearedBoard: f.clearedBoard, fenceT: f.fenceT, event: f.event },
-    wall: b.wall, bonus: b.bonus,
+    path: { pts: f.pts, apex: f.apex, landing: f.landing, rest: f.rest, hitBoard: f.hitBoard, clearedBoard: f.clearedBoard, videoBoard: f.videoBoard, fanDeck: f.fanDeck, fenceT: f.fenceT, event: f.event },
+    wall: b.wall, bonus: b.bonus, outOfPark: b.outOfPark,
     // debugging extras
     projected: Math.round(f.distance), q: { t: qt, aim: qa, h: qh }, idealAim: ideal, streakEv,
   };
@@ -557,7 +645,7 @@ function swingOutcome(char, park, cond, pitch, tapT, aim, streak, seed, samples)
 
 /**
  * Fly a batted ball and classify it exactly as resolveSwing does:
- * { kind: 'foul'|'homer'|'grounder'|'popup'|'liner'|'flyout', distance, bonus, wall, flight }.
+ * { kind: 'foul'|'homer'|'grounder'|'popup'|'liner'|'flyout', distance, bonus, outOfPark, wall, flight }.
  * Foul = launched outside ±45°, or (beyond the infield) first landing / fence crossing outside ±45°.
  * distance: homers → projected distance at field level; others → where it first came down / hit the wall.
  */
@@ -574,8 +662,9 @@ export function battedBall(parkId, { exitVelo, launch, spray, conditions, from, 
   else if (launch < 24) kind = 'liner';
   else kind = 'flyout';
   const homer = kind === 'homer';
-  const bonus = homer ? classifyLanding(P.id, { spray: f.restSpray, r: f.restR, y: f.rest[1], hitBoard: f.hitBoard, clearedBoard: f.clearedBoard }) : null;
-  return { kind, distance: Math.round(homer ? f.distance : f.carry), bonus, wall: f.wall && !foul, flight: f };
+  const bonus = homer ? classifyLanding(P.id, { spray: f.restSpray, r: f.restR, y: f.rest[1], hitBoard: f.hitBoard, clearedBoard: f.clearedBoard, videoBoard: f.videoBoard, fanDeck: f.fanDeck }) : null;
+  const distance = Math.round(homer ? Math.min(f.distance, TUNING.maxHomerFt) : f.carry);
+  return { kind, distance, bonus, outOfPark: homer && isOutOfPark(P.id, bonus), wall: f.wall && !foul, flight: f };
 }
 
 // ============================================================================
@@ -593,7 +682,7 @@ export function createRound({ charId, parkId, mode = 'free', seed = 1, condition
 
   const R = {
     charId: char.id, parkId: park.id, mode, seed, date, conditions: cond, bats: char.bats,
-    outs: 0, homers: 0, score: 0, streak: 0, bestStreak: 0, longest: 0, pitchCount: 0, over: false,
+    outs: 0, homers: 0, score: 0, streak: 0, bestStreak: 0, longest: 0, pitchCount: 0, over: false, outOfPark: 0,
 
     nextPitch() {
       if (R.over) throw new Error('round over');
@@ -605,22 +694,27 @@ export function createRound({ charId, parkId, mode = 'free', seed = 1, condition
       return { kind: pitch && pitch.inZone ? 'strike' : 'ball', swung: false, n: pitch ? pitch.n : 0 };
     },
 
+    // v2: batSpeed ∈ [0,1] (swipe speed; button = 0.72), uppercut ∈ [−1,1] (swipe angle). tapT = swing START.
     // opts.samples === false: no path.pts (bots / batch tools — much faster)
-    resolveSwing(pitch, { tapT, aim = 0, samples = true } = {}) {
-      return swingOutcome(char, park, cond, pitch, tapT, aim, R.streak, seed, samples !== false);
+    resolveSwing(pitch, { tapT, aim = 0, batSpeed = TUNING.batSpeedRef, uppercut = 0, samples = true } = {}) {
+      return swingOutcome(char, park, cond, pitch, tapT, aim, R.streak, seed, samples !== false, batSpeed, uppercut);
     },
 
     apply(result) {
       if (!result) throw new Error('apply(result): result required');
       if (applied.has(result)) return applied.get(result);     // idempotent per result object
-      if (R.over) return { scoreDelta: 0, callouts: [], out: false, roundOver: true, streak: R.streak, mult: 1, nextMult: 1 };
-      const callouts = [];
+      if (R.over) return { scoreDelta: 0, callouts: [], events: [], out: false, roundOver: true, streak: R.streak, mult: 1, nextMult: 1 };
+      const callouts = [], events = [];
       let scoreDelta = 0, out = false, mult = 1;
       const prevStreak = R.streak;
       if (result.kind === 'homer') {
         const clutchNow = R.outs === OUTS_PER_ROUND - 1;
         R.homers++; R.streak++; R.bestStreak = Math.max(R.bestStreak, R.streak);
-        const d = Math.round(result.distance);
+        events.push('homer');
+        if (R.streak % TUNING.waveEvery === 0) events.push('wave');           // THE WAVE at 3, 6, 9 … straight
+        const oop = result.outOfPark != null ? !!result.outOfPark : isOutOfPark(park.id, result.bonus);
+        if (oop) { events.push('outOfPark'); R.outOfPark++; }
+        const d = Math.round(Math.min(result.distance, TUNING.maxHomerFt));
         homerDistances.push(d);
         R.longest = Math.max(R.longest, d);
         const sm = TUNING.streakMult[Math.min(R.streak, TUNING.streakMult.length - 1)];
@@ -636,15 +730,15 @@ export function createRound({ charId, parkId, mode = 'free', seed = 1, condition
         scoreDelta += total;
         if (result.bonus && park.bonus[result.bonus]) {
           const b = park.bonus[result.bonus];
-          callouts.push({ text: `${b.label} +${b.points}`, points: b.points, kind: 'bonus', key: result.bonus });
-          scoreDelta += b.points;
+          callouts.push({ text: `${b.label} +${b.points}`, points: b.points, kind: 'bonus', key: result.bonus, outOfPark: oop });
+          scoreDelta += b.points; events.push('bonus');
         }
         if (d >= TUNING.wayOutFt) { callouts.push({ text: `WAY OUT +${TUNING.wayOutPts}`, points: TUNING.wayOutPts, kind: 'wayout' }); scoreDelta += TUNING.wayOutPts; }
         else if (d >= TUNING.moonshotFt) { callouts.push({ text: `MOONSHOT +${TUNING.moonshotPts}`, points: TUNING.moonshotPts, kind: 'moonshot' }); scoreDelta += TUNING.moonshotPts; }
         if (d > best) {
           best = d;
           callouts.push({ text: `NEW RECORD +${TUNING.recordPts}`, points: TUNING.recordPts, kind: 'record' });
-          scoreDelta += TUNING.recordPts;
+          scoreDelta += TUNING.recordPts; events.push('record');
         }
         if (S.streakEv && R.streak >= 1) { // Skye: power grows with every straight homer (applies to the NEXT swing)
           const nb = Math.min(R.streak * S.streakEv, S.streakEvCap);
@@ -661,13 +755,13 @@ export function createRound({ charId, parkId, mode = 'free', seed = 1, condition
         if (result.wall) text = 'OFF THE WALL';
         else if (result.kind === 'flyout' && result.distance >= fenceDistance(park.id, result.spray) - 30) text = 'WARNING TRACK';
         callouts.push({ text, points: 0, kind: 'out' });
-        if (prevStreak >= 2) callouts.push({ text: `STREAK ENDS AT ${prevStreak}`, points: 0, kind: 'streakEnd' });
+        if (prevStreak >= 2) { callouts.push({ text: `STREAK ENDS AT ${prevStreak}`, points: 0, kind: 'streakEnd' }); events.push('streakEnd'); }
         if (R.outs === OUTS_PER_ROUND - 1) callouts.push({ text: `LAST OUT — CLUTCH ×${TUNING.clutchMult}`, points: 0, kind: 'info' });
       }
       R.score += scoreDelta;
       if (R.outs >= OUTS_PER_ROUND) R.over = true;
       const res = {
-        scoreDelta, callouts, out, roundOver: R.over, streak: R.streak, mult,
+        scoreDelta, callouts, events, out, roundOver: R.over, streak: R.streak, mult,
         // multiplier the NEXT homer would get (for the HUD)
         nextMult: TUNING.streakMult[Math.min(R.streak + 1, TUNING.streakMult.length - 1)] * (R.outs === OUTS_PER_ROUND - 1 ? TUNING.clutchMult : 1),
       };
@@ -680,7 +774,7 @@ export function createRound({ charId, parkId, mode = 'free', seed = 1, condition
       return {
         score: R.score, homers: R.homers, longest: R.longest, outs: R.outs, pitches: R.pitchCount,
         bestStreak: R.bestStreak, charId: R.charId, parkId: R.parkId, mode: R.mode, date: R.date,
-        avgDistance: avg, v: VERSION,
+        avgDistance: avg, outOfPark: R.outOfPark || 0, v: VERSION,
       };
     },
   };
@@ -689,30 +783,39 @@ export function createRound({ charId, parkId, mode = 'free', seed = 1, condition
 
 // ============================================================================
 // SIM_SELFTEST — the numbers this build was tuned to (regenerate with tools/sim-test.mjs and
-// tools/sim-bots.mjs; values below are copied from their output).
+// tools/sim-bots.mjs; values below are copied from their output). v2 (PLAY, swipe swing).
 // ============================================================================
 export const SIM_SELFTEST = {
-  // simulateFlight, no wind, from [0,3,contactZ]: [exitVelo, launch, target ft, sim ft]
-  calibration: [[100, 28, 370, 367.4], [105, 28, 405, 403.1], [110, 28, 440, 439.9], [115, 30, 475, 475.7], [95, 25, 320, 323.4]],
-  wind: { out10: +27.7, in10: -31.6, rateOut10: +17.0 },          // ft on a 105 mph @ 28° drive (Rate windScale 0.6)
+  // simulateFlight, no wind, from [0,3,contactZ]: [exitVelo, launch, target ft, sim ft] (v2: Statcast-like top end)
+  calibration: [[95, 25, 326, 325.8], [100, 28, 367, 367.4], [105, 28, 400, 399.8], [110, 28, 433, 432.7], [115, 30, 464, 463.8], [119, 28, 491, 490.7]],
+  wind: { out10: +28.0, in10: -31.9, rateOut10: +17.2 },          // ft on a 105 mph @ 28° drive (Rate windScale 0.6)
   weather: { heat: 1.031, overcast: 0.99, drizzle: 0.971 },        // distance ratio vs clear
-  shape: { '119@28': 507, '105@20': 366, '105@33': 405, '105@45': 357, '105@60': 240 },
-  // tools/sim-bots.mjs --rounds 300 (random free-play conditions, both parks): mean HR/round per bot
+  shape: { '124@28': 520, '105@20': 364, '105@33': 402, '105@45': 354, '105@60': 238 },
+  swingLead: { 0: 0.2, 0.3: 0.167, 0.72: 0.12, 0.9: 0.101, 1: 0.09 },   // swingLeadFor(batSpeed), s
+  // tools/sim-bots.mjs --rounds 200 (random free-play conditions, both parks): mean HR/round per bot (v2 swipe bots)
   bots: {
-    rounds: 300,
-    meanHr: {"novice": 2.3, "average": 4.3, "good": 9.1, "elite": 21.9}, over60pct: 2.4,
-    // per fox: [HR/round, score, avg HR ft]
+    rounds: 200,
+    meanHr: { novice: 1.0, average: 3.6, good: 8.4, elite: 22.4 }, over60pct: 2.97,
+    // per fox (both parks): [HR/round, score, avg HR ft]
     perFox: {
-      good: {"rocco": [6.7, 6203, 472], "jett": [9.0, 6439, 415], "dex": [12.9, 10542, 432], "blaze": [7.3, 6238, 455], "nova": [11.7, 9491, 436], "skye": [7.2, 6146, 429]},
-      elite: {"rocco": [18.5, 20832, 477], "jett": [16.6, 13566, 417], "dex": [29.2, 29221, 436], "blaze": [15.8, 16047, 459], "nova": [28.9, 29489, 441], "skye": [22.3, 28738, 461]},
+      good: { rocco: [5.3, 4103, 435], jett: [11.3, 8549, 417], dex: [9.9, 7448, 420], blaze: [6.8, 5130, 428], nova: [9.1, 6808, 421], skye: [7.9, 6229, 420] },
+      elite: { rocco: [15.6, 15276, 440], jett: [27.8, 26579, 423], dex: [26.0, 25199, 425], blaze: [15.6, 14309, 433], nova: [24.4, 23393, 427], skye: [24.8, 28620, 437] },
     },
-    missed: ['good-bot score ±20% (dex +40%, nova +26%)', 'Jett most HR (dex, nova ahead)'],
+    missed: ['good-bot score ±20% (rocco −36%, jett +34%) — needs the CHARACTERS patch below (lead owns CHARACTERS)'],
   },
-  // same run with the proposed data.js change (all targets hold):
-  // dex.window 0.078→0.064, nova.window 0.080→0.068, jett.evMax 105→107, blaze.window 0.064→0.070
+  // --bots good,hard,button,elite --oop --rounds 300: homers per out-of-the-park homer ("1 in N")
+  outOfPark: {
+    hard:   { wrigley: { rocco: 8.8, blaze: 14.3, skye: 30.7, nova: 32.9, dex: 38.7, jett: 60.0 }, rate: { rocco: 149, blaze: 303, skye: 373, nova: 421, dex: 420, jett: 467 } },
+    good:   { wrigley: { rocco: 13.7, blaze: 20.0, skye: 28.6, nova: 47.8, dex: 57.3, jett: 84.8 }, rate: { rocco: 233 } },
+    button: { wrigley: { rocco: 21.1, blaze: 30.8, jett: 176 }, rate: {} },
+    elite:  { wrigley: { rocco: 9.8, skye: 11.2, blaze: 16.7, jett: 64.7 }, rate: { rocco: 106, skye: 105 } },
+    longest: 590, maxRoundScore: 192447, maxHomersPerRound: 84,
+  },
+  // proposed data.js CHARACTERS patch (lead owns CHARACTERS): brings good-bot scores to −21%…+21%
   proposal: {
-    patch: { dex: { window: 0.064 }, nova: { window: 0.068 }, jett: { evMax: 107 }, blaze: { window: 0.07 } },
-    meanHr: {"novice": 2.3, "average": 4.2, "good": 9.0, "elite": 21.8}, over60pct: 1.89,
-    good: {"rocco": [6.7, 6203, 472], "jett": [11.2, 8581, 423], "dex": [10.9, 8540, 431], "blaze": [7.9, 6869, 455], "nova": [10.2, 7995, 435], "skye": [7.2, 6146, 429]},
+    patch: { rocco: { window: 0.062, whiffAt: 2.6 }, blaze: { window: 0.078 }, skye: { window: 0.084 }, jett: { window: 0.09 } },
+    good: { rocco: [6.4, 5098, 435], jett: [10.5, 7839, 417], dex: [9.9, 7448, 420], blaze: [7.4, 5569, 428], nova: [9.1, 6808, 421], skye: [8.5, 6855, 421] },
   },
+  // leaderboard bounds for this scoring (tools/sim-test.mjs 'v2 limits'): one homer ≤ maxHomerFt·3·1.5 + 2000 + 250 + 250
+  limits: { perHomerMax: 5245, maxHomerFt: 610 },
 };

@@ -27,7 +27,8 @@ North Side or Rate Field on the South Side), and see how far you can hit it befo
   The park, time of day, weather and the lake wind change every day.
 
 ## Tech
-- One self-contained page (`index.html`, three.js r169 bundled) plus the art in `assets/`. No other outside requests.
+- One page (`index.html`, three.js r169 bundled) plus the art in `assets/`: rigged 3D fox models (`assets/models/*.glb`, loaded lazily), park textures, the crowd atlas, the booth announcer's frames and voice lines. No other outside requests.
+- v2 (Sep 2026): swipe-to-swing (faster swipe = harder swing; a SWING button is in Settings), rigged 3D hitters in a real sideways stance, Wrigley Field and Rate Field rebuilt from research, a living crowd that does THE WAVE after 3 straight homers, balls that leave the park, and Rusty Brushwood in the Wrigley booth calling the out-of-the-park shots.
 - Leaderboard: a Cloudflare Worker + KV (`worker/`). The game still works offline and syncs scores later.
 - Source is in `src/`; `node build.mjs` bundles `src/main.js` into `dist/index.html`. `dev.html` runs the modules
   unbundled (serve the folder with any static server).

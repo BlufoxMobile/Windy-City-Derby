@@ -21,13 +21,13 @@
 // ============================================================================
 
 const GAME = 'windy-city-derby';
-const VERSION = '1.0.0';
+const VERSION = '2.0.0';
 const CHAR_IDS = ['rocco', 'jett', 'dex', 'blaze', 'nova', 'skye'];
 const PARK_IDS = ['wrigley', 'rate'];
 const DISTRICTS = ['North Side', 'South Side', 'East Side', 'West Side', 'Big South'];
 const MODES = ['free', 'daily'];
 const MAX_ROWS = 100;
-const LIMITS = { score: 60000, homers: 60, longest: 620, bestStreak: 60, pitches: 400 };
+const LIMITS = { score: 250000, homers: 100, longest: 620, bestStreak: 100, pitches: 400 };
 const RATE = { max: 20, windowMs: 60000 };
 const MAX_BODY = 4096;
 
@@ -92,7 +92,7 @@ function validate(b, nowMs) {
   if (!isInt(b.longest, 0, LIMITS.longest)) return 'bad longest';
   if (b.bestStreak != null && !isInt(b.bestStreak, 0, Math.min(LIMITS.bestStreak, b.homers))) return 'bad bestStreak';
   if (b.pitches != null && !isInt(b.pitches, 0, LIMITS.pitches)) return 'bad pitches';
-  if (b.score > b.homers * 3200 + 200) return 'implausible score';
+  if (b.score > b.homers * 5300 + 200) return 'implausible score';
   if ((b.longest > 0) !== (b.homers > 0)) return 'implausible longest';
   const today = chicagoDate(nowMs);
   let date = today;

@@ -1,13 +1,38 @@
 // ============================================================================
-// WINDY CITY DERBY — UI (all DOM). Owner: UI.
-// createUI(root, { onEvent, assets, characters, parks }) → UI   (see CONTRACT.md)
+// WINDY CITY DERBY — UI (all DOM). Owner: PLAY (v2; v1 UI agent).
+// createUI(root, { onEvent, assets, characters, parks }) → UI   (see CONTRACT.md / CONTRACT-v2.md)
 // Imports only data.js. Never touches three.js, the game, audio or the network.
 // Every screen renders something good with NO assets (procedural fallbacks).
+//
+// v2 SWING INPUT (the game only ever sees onEvent('swing', { aim, t, batSpeed, uppercut, via })):
+//   swipe (default) — drag across the plate. t = the moment the finger STARTED moving (back-dated from the
+//     pointer samples, so recognising the gesture never eats the player's timing); emitted as soon as the
+//     swipe is unambiguous (≥ 7.5% of the short screen side and ≥ 3 samples / 40 ms, or on lift).
+//     batSpeed = (peak speed in screen-heights/s ÷ SWIPE.vMax)^SWIPE.gamma — the same on every phone.
+//     A righty's natural swipe is left → right across the plate (a lefty's right → left); the other way
+//     works too at SWIPE.reverseMul of the speed. uppercut = the swipe's angle (up = loft). aim = where
+//     the swipe STARTS (the PULL / CENTER / OPPO lanes along the bottom).
+//   button — a big SWING button (press = swing start, batSpeed = TUNING.batSpeedRef) + PULL/CENTER/OPPO.
+//   keyboard — space = swing (ref speed), shift+space = max effort, ←/→ = aim.
 // ============================================================================
 import {
-  CHARACTERS as DEF_CHARS, PARKS as DEF_PARKS, DISTRICTS, OUTS_PER_ROUND, PITCHES, WEATHER,
-  windLabel, chicagoDate, fenceDistance, hashString, VERSION,
+  CHARACTERS as DEF_CHARS, PARKS as DEF_PARKS, DISTRICTS, OUTS_PER_ROUND, PITCHES, WEATHER, TUNING,
+  windLabel, chicagoDate, fenceDistance, hashString, isOutOfPark, VERSION,
 } from './data.js';
+
+/** Swipe → swing tuning (exported for tests / tools). Speeds in short-screen-sides per second. */
+export const SWIPE = {
+  minFrac: 0.075,     // displacement to recognise a swipe (× short side ≈ 29 px on a 390-wide phone)
+  liftFrac: 0.045,    // …or this much if the finger already lifted (a quick flick)
+  minSamples: 3, maxWait: 40,   // samples after the movement start, or ms, before judging speed
+  moveEps: 3,         // px — the finger counts as moving past this
+  vMax: 5.2,          // S/s that maps to batSpeed 1 (a hard, confident swipe)
+  gamma: 0.7,         // batSpeed = (v / vMax)^gamma: a lazy flick (~1 S/s) ≈ 0.3, a brisk swipe (~3.3 S/s) ≈ 0.72
+  reverseMul: 0.88,   // swiping against your natural direction still swings, just not as hard
+  upDead: 6, upFull: 38,        // deg — uppercut dead zone / full loft
+  scaleMin: 300, scaleMax: 720, // clamp for the short side (desktop windows)
+};
+export const AIM_LANE = 0.7;       // button mode: PULL / OPPO aim magnitude
 
 // ---------------------------------------------------------------- utilities
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -62,6 +87,8 @@ const IC = {
   swap: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h14l-3.5-3.5M20 16H6l3.5 3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   again: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 3.5v4h-4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
+IC.swipe = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 15.5c3.2-1.8 6.6-2.7 10-2.7 2.6 0 5 .5 7.3 1.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="m17.6 11.4 3.2 3.1-3.9 1.9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="4.2" cy="15" r="2.2" fill="currentColor"/></svg>';
+IC.bat = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.2 19.8 3 18.6l9.7-10.1c1.8-1.9 4.8-4.6 6.6-5.3 1-.4 1.9.5 1.5 1.5-.7 1.8-3.4 4.8-5.3 6.6z" fill="currentColor"/><circle cx="5.2" cy="5.4" r="2.1" fill="currentColor"/></svg>';
 const weatherIcon = (w, tod) => (w === 'drizzle' ? IC.rain : w === 'overcast' ? IC.cloud : w === 'heat' ? IC.heat : tod === 'day' ? IC.sun : IC.star);
 const todIcon = tod => (tod === 'night' ? IC.moon : tod === 'dusk' ? IC.dusk : IC.sun);
 const windArrow = wind => {
@@ -122,7 +149,8 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
   const S = {
     screen: null, screenEl: null, flow: 'free', name: sanitizeName(LS.get('wcd-ui-name', ''), { final: true }), district: LS.get('wcd-ui-district', '') || '',
     charId: CH[0].id, bats: CH[0].bats || 'R', hud: null, hudOn: false, armed: false, aim: 0, swings: 0,
-    prefs: { sound: saved.sound !== false, music: saved.music !== false, haptics: saved.haptics !== false, quality: saved.quality || 'auto' },
+    prefs: { sound: saved.sound !== false, music: saved.music !== false, haptics: saved.haptics !== false, quality: saved.quality || 'auto', swing: saved.swing === 'button' ? 'button' : 'swipe' },
+    coach: LS.get('wcd-coach-v2', {}) || {},
     knownBest: num(LS.get('wcd-ui-best', 0)), boardCtl: null, lastSummary: null,
   };
   const timers = new Set();
@@ -171,6 +199,7 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
   W.innerHTML = `<div class="wcd-screens"></div>
   <div class="wcd-hud" aria-hidden="true">
     <div id="tapzone" class="wcd-tapzone"></div>
+    <canvas class="swipe-trail"></canvas>
     <div class="hud-top">
       <div class="hud-bug">
         <div class="hud-ava"></div>
@@ -189,8 +218,14 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
     <div class="hud-lanes">
       <div class="lanes"><div class="lane" data-l="0"><span></span></div><div class="lane" data-l="1"><span></span></div><div class="lane" data-l="2"><span></span></div></div>
       <div class="aim-mk"><i></i></div>
-      <div class="hud-hint">TAP ANYWHERE TO SWING</div>
+      <div class="hud-hint">SWIPE ACROSS THE PLATE</div>
     </div>
+    <div class="hud-btns">
+      <div class="aim-seg" role="radiogroup" aria-label="Aim"><button data-aim="0" role="radio"><span></span></button><button data-aim="1" role="radio"><span>CENTER</span></button><button data-aim="2" role="radio"><span></span></button></div>
+      <button class="swing-btn" aria-label="Swing"><i class="sb-ring"></i><span>SWING</span></button>
+    </div>
+    <div class="coach"><div class="coach-art"><i class="coach-path"></i><i class="coach-dot"></i></div><div class="coach-t"></div></div>
+    <div class="bat-flash"></div>
   </div>
   <div class="wcd-fx"></div>
   <div class="wcd-toasts" role="status" aria-live="polite"></div>
@@ -204,6 +239,8 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
     ava: W.querySelector('.hud-ava'), name: W.querySelector('.hud-name'), pips: [...W.querySelectorAll('.pips i')], outsN: W.querySelector('.hud-outs-n'),
     score: W.querySelector('.js-score'), hr: W.querySelector('.js-hr'), streak: W.querySelector('.hud-streak'), wind: W.querySelector('.hud-wind'),
     lanes: [...W.querySelectorAll('.lane')], mk: W.querySelector('.aim-mk'), hint: W.querySelector('.hud-hint'), bug: W.querySelector('.hud-bug'),
+    trail: W.querySelector('.swipe-trail'), btns: W.querySelector('.hud-btns'), seg: [...W.querySelectorAll('.aim-seg button')], swingBtn: W.querySelector('.swing-btn'),
+    coach: W.querySelector('.coach'), coachT: W.querySelector('.coach-t'), flash: W.querySelector('.bat-flash'),
   };
 
   // ------------------------------------------------------------ count-up
@@ -486,11 +523,13 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
   function laneLabels() {
     const labs = S.bats === 'L' ? ['OPPO', 'CENTER', 'PULL'] : ['PULL', 'CENTER', 'OPPO'];
     H.lanes.forEach((l, i) => { l.querySelector('span').textContent = labs[i]; });
+    H.seg.forEach((b, i) => { b.querySelector('span').textContent = labs[i]; });
+    W.classList.toggle('bats-l', S.bats === 'L');
   }
   function hud(state = {}) {
     const st = state || {};
     const c = CHB[st.charId] || CHB[S.charId] || CH[0];
-    S.charId = c.id; S.bats = st.bats || c.bats || 'R';
+    S.charId = c.id; S.bats = st.bats || c.bats || 'R'; if (st.parkId) S.parkId = st.parkId;
     if (!S.hudOn) { closeScreen(); W.classList.add('hud-on'); S.hudOn = true; laneLabels(); setAim(S.aim); }
     if (st.name) S.name = sanitizeName(st.name, { final: true }) || S.name;
     if (H.ava.getAttribute('data-id') !== c.id) { H.ava.innerHTML = avatarTag(c.id); H.ava.setAttribute('data-id', c.id); laneLabels(); }
@@ -518,40 +557,213 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
   function hideHud() { hudOff(); clearFx(); }
 
   // ---- aim + input ----------------------------------------------------------
+  const pullSign = () => (S.bats === 'L' ? 1 : -1);          // field direction of PULL for this hitter
+  const laneOf = v => (v < -1 / 3 ? 0 : v > 1 / 3 ? 2 : 1);    // screen lane (0 left … 2 right)
   function setAim(v) {
     S.aim = clamp(num(v), -1, 1);
     H.mk.style.setProperty('--x', `${50 + S.aim * 44}%`);
-    const lane = S.aim < -1 / 3 ? 0 : S.aim > 1 / 3 ? 2 : 1;
+    const lane = laneOf(S.aim);
     H.lanes.forEach((l, i) => l.classList.toggle('on', i === lane));
+    H.seg.forEach((b, i) => { b.classList.toggle('on', i === lane); b.setAttribute('aria-checked', String(i === lane)); });
   }
   const aimFromX = x => { const r = L.tap.getBoundingClientRect(); const f = r.width ? (x - r.left) / r.width : 0.5; return clamp((f - 0.5) / 0.44, -1, 1); };
+  const batMph = b => Math.round(TUNING.batMph[0] + (TUNING.batMph[1] - TUNING.batMph[0]) * clamp(num(b), 0, 1));
+  // event.timeStamp is on the performance.now() clock in every current browser; fall back if a platform hands us epoch ms / 0
+  const tsOf = e => { const n = performance.now(), t = e && e.timeStamp; return Number.isFinite(t) && t > 0 && Math.abs(t - n) < 60000 ? t : n; };
+  const shortSide = () => clamp(Math.min(innerWidth || 390, innerHeight || 844), SWIPE.scaleMin, SWIPE.scaleMax);
+
+  // ------------------------------------------------ swing mode (swipe | button)
+  function setSwingMode(mode) {
+    S.prefs.swing = mode === 'button' ? 'button' : 'swipe';
+    W.classList.toggle('mode-button', S.prefs.swing === 'button');
+    W.classList.toggle('mode-swipe', S.prefs.swing !== 'button');
+    if (S.armed) coachMaybe();
+  }
+
+  // ------------------------------------------------ coach mark (never blocks input, never holds the sim)
+  const COACH_N = 2;   // show until this many swings in the mode (persisted)
+  function coachMaybe() {
+    const m = S.prefs.swing, seen = num(S.coach[m]);
+    if (!S.armed || seen >= COACH_N) { H.coach.classList.remove('show'); return; }
+    const natural = S.bats === 'L' ? 'rtl' : 'ltr';
+    H.coach.className = `coach show c-${m} c-${natural}`;
+    H.coachT.innerHTML = m === 'button'
+      ? `${IC.bat}<span><b>TAP SWING</b> AS IT ARRIVES · PICK YOUR LANE</span>`
+      : `${IC.swipe}<span><b>SWIPE ACROSS THE PLATE</b> · FASTER = HARDER</span>`;
+  }
+  function coachDone() {
+    const m = S.prefs.swing; S.coach[m] = num(S.coach[m]) + 1; LS.set('wcd-coach-v2', S.coach);
+    H.coach.classList.remove('show');
+  }
+
+  // ------------------------------------------------ swipe trail (2D canvas, only animates while visible)
+  const TR = { ctx: null, dpr: 1, w: 0, h: 0, pts: [], live: false, endAt: 0, raf: 0, col: '#35d0ff', hot: 0 };
+  function trailSize() {
+    const cv = H.trail; if (!cv) return;
+    const dpr = Math.min(1.5, window.devicePixelRatio || 1), w = innerWidth, h = innerHeight;
+    if (TR.w !== w || TR.h !== h || TR.dpr !== dpr) { TR.w = w; TR.h = h; TR.dpr = dpr; cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    if (!TR.ctx) TR.ctx = cv.getContext('2d');
+  }
+  function trailBegin(x, y, t) { trailSize(); TR.pts = [{ x, y, t }]; TR.live = true; TR.hot = 0; TR.col = '#bfe9ff'; trailKick(); }
+  function trailAdd(x, y, t) { if (TR.live) { TR.pts.push({ x, y, t }); if (TR.pts.length > 90) TR.pts.splice(0, TR.pts.length - 90); } }
+  function trailEnd() { TR.live = false; TR.endAt = performance.now(); trailKick(); }
+  function trailKick() { if (!TR.raf && TR.ctx) TR.raf = requestAnimationFrame(trailDraw); }
+  function trailDraw() {
+    TR.raf = 0; const c = TR.ctx; if (!c) return;
+    const now = performance.now(), dpr = TR.dpr;
+    c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, TR.w * dpr, TR.h * dpr);
+    const life = 230, fadeOut = TR.live ? 1 : clamp(1 - (now - TR.endAt) / 260, 0, 1);
+    const newest = TR.pts.length ? TR.pts[TR.pts.length - 1].t : now;
+    const tNow = TR.live ? Math.min(now, newest + 120) : Math.min(TR.endAt, newest + 120);   // a still finger keeps its trail a beat
+    const pts = TR.pts.filter(p => tNow - p.t < life + 40);
+    if (pts.length > 1 && fadeOut > 0) {
+      c.setTransform(dpr, 0, 0, dpr, 0, 0); c.lineCap = 'round'; c.lineJoin = 'round'; c.globalCompositeOperation = 'lighter';
+      const passes = [[26, 0.10, TR.col], [13, 0.28, TR.col], [5.5, 0.9, '#ffffff']];
+      for (const [wd, al, col] of passes) {
+        c.strokeStyle = col;
+        for (let i = 1; i < pts.length; i++) {
+          const k = clamp(1 - (tNow - pts[i].t) / life, 0, 1); if (k <= 0) continue;
+          c.globalAlpha = al * k * fadeOut; c.lineWidth = wd * (0.35 + 0.65 * k) * (1 + TR.hot * 0.35);
+          c.beginPath(); c.moveTo(pts[i - 1].x, pts[i - 1].y); c.lineTo(pts[i].x, pts[i].y); c.stroke();
+        }
+      }
+      const h = pts[pts.length - 1];   // glowing head under the finger
+      if (TR.live) { const g = c.createRadialGradient(h.x, h.y, 0, h.x, h.y, 34); g.addColorStop(0, 'rgba(255,255,255,.55)'); g.addColorStop(1, 'rgba(53,208,255,0)'); c.globalAlpha = 1; c.fillStyle = g; c.beginPath(); c.arc(h.x, h.y, 34, 0, Math.PI * 2); c.fill(); }
+      c.globalAlpha = 1; c.globalCompositeOperation = 'source-over';
+    }
+    if (TR.live || fadeOut > 0) TR.raf = requestAnimationFrame(trailDraw); else c.clearRect(0, 0, TR.w * dpr, TR.h * dpr);
+  }
+
+  // ------------------------------------------------ bat-speed flash (bottom band, below the pitch path)
+  function batFlash(b, x) {
+    const el = H.flash; if (!el) return;
+    const mph = batMph(b), max = b >= TUNING.maxEffortAt;
+    const tier = max ? 't-max' : b >= 0.8 ? 't-hard' : b >= 0.45 ? 't-mid' : 't-easy';
+    el.className = `bat-flash ${tier}`; void el.offsetWidth;
+    el.style.setProperty('--x', `${clamp(x ?? innerWidth / 2, 90, innerWidth - 90)}px`);
+    el.innerHTML = `${max ? '<span class="bf-max">MAX EFFORT</span>' : ''}<span class="bf-row"><b>${mph}</b><small>MPH</small><i class="bf-bar"><s style="--v:${clamp(b, 0.04, 1).toFixed(3)}"></s></i></span>`;
+    el.classList.add('show');
+    cancel(S.flashT); S.flashT = later(() => el.classList.remove('show'), max ? 1100 : 800);
+  }
+
+  // ------------------------------------------------ the swing itself (all input paths end here)
   function armInput(on) {
     S.armed = !!on; W.classList.toggle('armed', S.armed);
-    if (S.armed) { clearResult(); H.hint.classList.toggle('show', S.swings < 3); }
+    if (S.armed) { clearResult(); coachMaybe(); }
     else {
-      H.hint.classList.remove('show');
+      H.hint.classList.remove('show'); H.coach.classList.remove('show');
       // The game disarms when a result's hold ends → take the result card down then (not if it was shown < 0.4 s ago).
       if (S.resAt && performance.now() - S.resAt > 400) clearResult();
     }
   }
-  function doSwing(aim, via) {
+  function doSwing({ aim = S.aim, t = performance.now(), batSpeed = TUNING.batSpeedRef, uppercut = 0, via = 'tap', x = null, extra = {} } = {}) {
     setAim(aim); S.swings++;
-    buzz(8);
-    H.hint.classList.remove('show');
+    S.armed = false; W.classList.remove('armed');          // one swing per pitch (the game re-arms the next one)
+    buzz(batSpeed >= TUNING.maxEffortAt ? [10, 20, 14] : 8);
+    H.hint.classList.remove('show'); coachDone();
     W.classList.remove('swung'); void W.offsetWidth; W.classList.add('swung');
-    emit('swing', { aim: S.aim, t: performance.now(), via });
+    if (via !== 'button') batFlash(batSpeed, x);
+    S.lastSwing = { batSpeed, uppercut, via, aim: S.aim, t };
+    emit('swing', { aim: S.aim, t, batSpeed: Math.round(batSpeed * 1000) / 1000, uppercut: Math.round(uppercut * 1000) / 1000, via, ...extra });
+  }
+
+  // ------------------------------------------------ swipe recogniser
+  const SW = { id: null, pts: [], x0: 0, y0: 0, moveT: null, done: false, armedAtDown: false };
+  const dist0 = p => Math.hypot(p.x - SW.x0, p.y - SW.y0);
+  /** Estimate when the finger started moving: once it is clearly moving (> moveEps px), interpolate the moment the
+   *  displacement first passed 1 px (walking back over slow first samples, so a lazy flick isn't dated late). */
+  function moveStart() {
+    const P = SW.pts;
+    for (let i = 1; i < P.length; i++) {
+      if (dist0(P[i]) < SWIPE.moveEps) continue;
+      let k = i; while (k > 1 && dist0(P[k - 1]) >= 1) k--;
+      const dk = dist0(P[k]), dj = dist0(P[k - 1]), f = clamp((1 - dj) / Math.max(1e-6, dk - dj), 0, 1);
+      return P[k - 1].t + (P[k].t - P[k - 1].t) * f;
+    }
+    return null;
+  }
+  function swipeEval(final) {
+    if (SW.done || SW.id == null) return;
+    const P = SW.pts, last = P[P.length - 1], S0 = shortSide();
+    const dx = last.x - SW.x0, dy = last.y - SW.y0, D = Math.hypot(dx, dy);
+    if (SW.moveT == null) SW.moveT = moveStart();
+    if (SW.moveT == null || D < (final ? SWIPE.liftFrac : SWIPE.minFrac) * S0) return;
+    const after = P.filter(p => p.t > SW.moveT).length, since = last.t - SW.moveT;
+    if (!final && after < SWIPE.minSamples && since < SWIPE.maxWait) return;
+    SW.done = true;
+    if (!S.armed) return;                                // a swipe between pitches does nothing
+    // peak speed: fastest ≥ 10 ms window, never below the average since the movement started
+    let vPeak = 0;
+    for (let i = P.length - 1; i > 0; i--) {
+      let j = i - 1; while (j > 0 && P[i].t - P[j].t < 10) j--;
+      const dt = P[i].t - P[j].t; if (dt >= 6) vPeak = Math.max(vPeak, Math.hypot(P[i].x - P[j].x, P[i].y - P[j].y) / dt);
+    }
+    const vAvg = D / Math.max(8, since);
+    const v = Math.max(vPeak, vAvg) * 1000 / S0;         // short sides per second
+    const natural = S.bats === 'L' ? -1 : 1;             // +1 = left → right
+    const horiz = Math.abs(dx) >= 0.3 * D;
+    const reverse = horiz && Math.sign(dx) !== natural;
+    let batSpeed = Math.pow(clamp(v / SWIPE.vMax, 0, 1), SWIPE.gamma) * (reverse ? SWIPE.reverseMul : 1);
+    const ang = Math.atan2(-dy, Math.max(1e-6, Math.abs(dx))) * 180 / Math.PI;   // + = finger moving up the screen
+    const uppercut = Math.sign(ang) * clamp((Math.abs(ang) - SWIPE.upDead) / (SWIPE.upFull - SWIPE.upDead), 0, 1);
+    TR.col = batSpeed >= TUNING.maxEffortAt ? '#ffc23a' : batSpeed >= 0.8 ? '#ff8a3a' : '#35d0ff'; TR.hot = clamp((batSpeed - 0.5) * 2, 0, 1);
+    doSwing({ aim: aimFromX(SW.x0), t: SW.moveT, batSpeed, uppercut, via: 'swipe', x: last.x,
+      extra: { speed: Math.round(v * 100) / 100, dir: Math.sign(dx) || natural, natural: !reverse, recognizedAt: last.t, latency: Math.round(last.t - SW.moveT) } });
+  }
+  function pushSamples(e) {
+    let list = null;
+    try { list = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null; } catch { list = null; }
+    if (!list || !list.length) list = [e];
+    for (const ev of list) { const p = { x: ev.clientX, y: ev.clientY, t: tsOf(ev) }; SW.pts.push(p); trailAdd(p.x, p.y, p.t); }
+    if (SW.pts.length > 160) SW.pts.splice(1, SW.pts.length - 160);
   }
   L.tap.addEventListener('pointerdown', e => {
     if (!S.hudOn) return;
     e.preventDefault();
-    const aim = aimFromX(e.clientX);
-    const rip = document.createElement('i'); rip.className = 'tap-rip'; rip.style.left = `${e.clientX}px`; rip.style.top = `${e.clientY}px`;
-    L.hud.appendChild(rip); setTimeout(() => rip.remove(), 520);
-    if (S.armed) doSwing(aim, 'tap');
-    else { setAim(aim); emit('skip', {}); }
+    if (S.prefs.swing === 'button') {                    // button mode: the field only skips result holds
+      if (!S.armed) emit('skip', {}); else { H.swingBtn.classList.remove('nudge'); void H.swingBtn.offsetWidth; H.swingBtn.classList.add('nudge'); }
+      return;
+    }
+    if (SW.id != null && SW.id !== e.pointerId) return;   // ignore a second finger
+    try { L.tap.setPointerCapture(e.pointerId); } catch { /* */ }
+    const t = tsOf(e);
+    SW.id = e.pointerId; SW.pts = [{ x: e.clientX, y: e.clientY, t }]; SW.x0 = e.clientX; SW.y0 = e.clientY; SW.moveT = null; SW.done = false; SW.armedAtDown = S.armed;
+    trailBegin(e.clientX, e.clientY, t);
+    if (!S.armed) emit('skip', {});
+    else setAim(aimFromX(e.clientX));
   }, { passive: false });
-  L.tap.addEventListener('pointermove', e => { if (S.hudOn && e.pointerType === 'mouse') setAim(aimFromX(e.clientX)); });
+  L.tap.addEventListener('pointermove', e => {
+    if (!S.hudOn) return;
+    if (e.pointerId !== SW.id) { if (e.pointerType === 'mouse' && S.prefs.swing !== 'button' && !e.buttons) setAim(aimFromX(e.clientX)); return; }
+    pushSamples(e); swipeEval(false);
+  });
+  const swipeUp = e => {
+    if (e.pointerId !== SW.id) return;
+    if (e.type === 'pointerup') { pushSamples(e); swipeEval(true); }
+    if (!SW.done && S.armed && SW.armedAtDown && e.type === 'pointerup') { H.hint.classList.add('show'); cancel(S.hintT); S.hintT = later(() => H.hint.classList.remove('show'), 1400); }
+    SW.id = null; trailEnd();
+    try { L.tap.releasePointerCapture(e.pointerId); } catch { /* */ }
+  };
+  L.tap.addEventListener('pointerup', swipeUp);
+  L.tap.addEventListener('pointercancel', swipeUp);
+  L.tap.addEventListener('lostpointercapture', e => { if (e.pointerId === SW.id) { SW.id = null; trailEnd(); } });
   L.tap.addEventListener('contextmenu', e => e.preventDefault());
+
+  // ------------------------------------------------ button mode
+  H.swingBtn.addEventListener('pointerdown', e => {
+    e.preventDefault(); e.stopPropagation();
+    if (!S.hudOn) return;
+    H.swingBtn.classList.remove('hit'); void H.swingBtn.offsetWidth; H.swingBtn.classList.add('hit');
+    if (!S.armed) { emit('skip', {}); return; }
+    doSwing({ aim: S.aim, t: tsOf(e), batSpeed: TUNING.batSpeedRef, uppercut: 0, via: 'button' });
+  }, { passive: false });
+  H.seg.forEach((b, i) => b.addEventListener('pointerdown', e => {
+    e.preventDefault(); e.stopPropagation(); if (!S.hudOn) return;
+    const v = i === 1 ? 0 : (i === 0 ? -1 : 1) * AIM_LANE;   // screen-left lane = LF side
+    setAim(v); buzz(5); emit('aim', { aim: S.aim });
+  }, { passive: false }));
+  [H.swingBtn, ...H.seg].forEach(b => b.addEventListener('contextmenu', e => e.preventDefault()));
+  addEventListener('resize', () => { if (TR.ctx) trailSize(); });
 
   const typing = t => t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
   const onKey = e => {
@@ -559,8 +771,11 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
     if (L.modal.classList.contains('open')) { if (e.key === 'Escape') { e.preventDefault(); closeModal(); } return; }
     if (S.introEl && (e.code === 'Space' || e.key === 'Enter' || e.key === 'Escape')) { e.preventDefault(); S.introFinish?.(); return; }
     if (S.hudOn) {
-      if (e.code === 'Space' || e.key === 'Enter') { e.preventDefault(); if (e.repeat) return; if (S.armed) doSwing(S.aim, 'key'); else emit('skip', {}); }
-      else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); setAim(Math.round((S.aim + (e.key === 'ArrowLeft' ? -0.5 : 0.5)) * 2) / 2); emit('aim', { aim: S.aim }); }
+      if (e.code === 'Space' || e.key === 'Enter') {
+        e.preventDefault(); if (e.repeat) return;
+        if (S.armed) doSwing({ aim: S.aim, t: tsOf(e), batSpeed: e.shiftKey ? 1 : TUNING.batSpeedRef, uppercut: 0, via: 'key' });
+        else emit('skip', {});
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); setAim(Math.round((S.aim + (e.key === 'ArrowLeft' ? -0.5 : 0.5)) * 2) / 2); emit('aim', { aim: S.aim }); }
       return;
     }
     const onBtn = e.target && e.target.closest && e.target.closest('button');
@@ -590,6 +805,7 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
   function result(res, applied = {}, { ms = 0 } = {}) {
     if (!res) return;
     clearResult(); L.fx.querySelector('.pcall')?.remove();
+    L.fx.querySelectorAll('.bc-oop').forEach(n => { n.classList.add('out'); setTimeout(() => n.remove(), 420); });  // the slam hands over to the card
     S.resAt = performance.now();
     const ap = applied || {}; const calls = Array.isArray(ap.callouts) ? ap.callouts : [];
     const kind = res.kind || 'flyout'; const homer = kind === 'homer';
@@ -597,6 +813,8 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
     const line = [];
     if (res.swung && kind !== 'whiff' && num(res.exitVelo) > 0) { line.push(`${Math.round(num(res.exitVelo))} MPH`); line.push(`${Math.round(num(res.launch))}°`); line.push(dirLabel(res.spray)); }
     const timing = res.swung && res.timingLabel ? `<span class="res-timing ${timingCls(res.timingLabel)}">${esc(res.timingLabel)}</span>` : '';
+    const bs = res.swung && Number.isFinite(num(res.batSpeed, NaN)) ? clamp(num(res.batSpeed), 0, 1) : null;
+    const batChip = bs == null ? '' : `<span class="res-bat${bs >= TUNING.maxEffortAt ? ' max' : bs >= 0.8 ? ' hard' : ''}"><span class="rb-k">BAT SPEED</span><b>${num(res.batMph) || batMph(bs)}</b><small>MPH</small><i class="rb-bar"><s style="--v:${Math.max(0.04, bs).toFixed(3)}"></s></i>${bs >= TUNING.maxEffortAt ? '<em>MAX</em>' : ''}</span>`;
     if (homer) {
       const d = Math.round(num(res.distance));
       const onlyDist = calls.length <= 1 && num(ap.mult, 1) <= 1;
@@ -606,10 +824,11 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
         return `<li class="rc rc-${esc(c.kind || 'x')}" style="--i:${i}"><span>${esc(text)}</span>${pts ? `<b>+${fmt(pts)}</b>` : ''}</li>`;
       }).join('');
       const big = d >= 450 || !!res.bonus || num(ap.streak) >= 2 || calls.some(c => c.kind === 'record');
-      el.className = `res res-homer${d >= 450 ? ' long' : ''}${calls.some(c => c.kind === 'record') ? ' record' : ''}`;
-      el.innerHTML = `<div class="res-hero"><div class="res-head"><span>HOME RUN</span></div>
+      const oop = !!res.outOfPark || (res.bonus && isOutOfPark(S.parkId || 'wrigley', res.bonus));
+      el.className = `res res-homer${d >= 450 ? ' long' : ''}${oop ? ' oop' : ''}${calls.some(c => c.kind === 'record') ? ' record' : ''}`;
+      el.innerHTML = `<div class="res-hero"><div class="res-head"><span>${oop ? 'OUT OF THE PARK' : 'HOME RUN'}</span></div>
           <div class="res-dist"><b class="js-d">0</b><span>FT</span></div>
-          <div class="res-meta">${line.length ? `<span class="res-line">${line.join(' · ')}</span>` : ''}${timing}</div></div>
+          <div class="res-meta">${line.length ? `<span class="res-line">${line.join(' · ')}</span>` : ''}${timing}${batChip}</div></div>
         ${rows ? `<ul class="res-calls">${rows}</ul>` : ''}
         <div class="res-total${onlyDist ? ' solo' : ''}">${num(ap.mult, 1) > 1 ? `<span class="res-mult">×${num(ap.mult)}</span>` : ''}<b>+${fmt(ap.scoreDelta)}</b><small>PTS</small></div>`;
       L.fx.appendChild(el);
@@ -627,12 +846,46 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
       const sub = kind === 'ball' ? 'NO OUT · GOOD EYE' : kind === 'strike' ? 'CALLED STRIKE · IT WAS IN THE ZONE' : '';
       el.className = `res res-out k-${esc(kind)}${kind === 'ball' ? ' is-ball' : ''}`;
       el.innerHTML = `<div class="res-hero"><div class="res-head"><span>${esc(head)}</span></div>
-          <div class="res-meta">${dist || line.length ? `<span class="res-line">${dist}${line.join(' · ')}</span>` : ''}${sub ? `<span class="res-line">${sub}</span>` : ''}${timing}</div></div>
+          <div class="res-meta">${dist || line.length ? `<span class="res-line">${dist}${line.join(' · ')}</span>` : ''}${sub ? `<span class="res-line">${sub}</span>` : ''}${timing}${batChip}</div></div>
         ${extra ? `<ul class="res-calls">${extra}</ul>` : ''}
         ${ap.out ? `<div class="res-outs" data-pending="1">OUT <b>${clamp(num(S.hud?.outs) + 1, 1, OUTS_PER_ROUND)}</b> OF ${OUTS_PER_ROUND}</div>` : ''}`;
       L.fx.appendChild(el);
       S.resT = later(clearResult, ms || 5000);
     }
+  }
+
+  // ---- broadcast callouts: OUT OF THE PARK / THE WAVE (upper band — never over the pitch path) ------------------
+  const OOP_WHERE = {
+    street_l: 'ONTO WAVELAND AVE', street_r: 'ONTO SHEFFIELD AVE', rooftop: 'UP ON THE ROOFTOPS', over_cf: null, out_of_park: 'INTO THE PARKING LOT',
+  };
+  function outOfPark({ parkId = S.parkId || 'wrigley', bonus = null, distance = 0, ms = 3200 } = {}) {
+    const P = PK[parkId] || PK.wrigley;
+    L.fx.querySelector('.bc-oop')?.remove();
+    const where = bonus === 'over_cf' ? (parkId === 'rate' ? 'OVER THE BIG BOARD' : 'OVER THE SCOREBOARD') : (OOP_WHERE[bonus] || 'CLEAN OUT OF THE YARD');
+    const pal = P.palette || {};
+    const el = document.createElement('div');
+    el.className = `bc bc-oop p-${esc(parkId)}`;
+    el.style.setProperty('--c1', parkId === 'rate' ? '#0d0f13' : (pal.primary || '#1f4fbf'));
+    el.style.setProperty('--c2', parkId === 'rate' ? '#c9d1d9' : (pal.secondary || '#c8372d'));
+    el.innerHTML = `<i class="bc-flash"></i><div class="bc-bar"><i class="bc-sweep"></i>
+        <span class="bc-kick"><i></i>${esc(P.name || '')}<i></i></span>
+        <span class="bc-t"><span class="w1">OUT OF</span><span class="w2">THE PARK</span></span>
+        <span class="bc-sub"><b>${esc(where)}</b>${distance ? `<em>${Math.round(num(distance))} FT</em>` : ''}</span></div>
+      <div class="bc-sparks">${'<i></i>'.repeat(14)}</div>`;
+    L.fx.appendChild(el);
+    buzz([30, 50, 30, 50, 80]);
+    later(() => { el.classList.add('out'); later(() => el.remove(), 420); }, Math.max(1200, ms));
+    return el;
+  }
+  function wave({ streak = 3, ms = 2600 } = {}) {
+    L.fx.querySelector('.bc-wave')?.remove(); clearResult();
+    const el = document.createElement('div');
+    el.className = 'bc bc-wave';
+    el.innerHTML = `<div class="bw-card"><div class="bw-crowd">${Array.from({ length: 22 }, (_, i) => `<i style="--i:${i}"></i>`).join('')}</div>
+        <span class="bw-t">THE WAVE!</span><span class="bw-sub"><b>${num(streak)}</b> STRAIGHT · THE WHOLE PARK IS UP</span></div>`;
+    L.fx.appendChild(el);
+    later(() => { el.classList.add('out'); later(() => el.remove(), 420); }, Math.max(1200, ms));
+    return el;
   }
 
   // ---- leaderboard panel (shared by roundOver + leaderboard screen) -------------
@@ -709,7 +962,7 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
             <div class="tile"><span class="k">HOME RUNS</span><b>${num(s.homers)}</b></div>
             <div class="tile${num(s.longest) >= 450 ? ' gold' : ''}"><span class="k">LONGEST</span><b>${num(s.longest)}<small>FT</small></b></div>
             <div class="tile"><span class="k">BEST STREAK</span><b>${num(s.bestStreak)}</b></div>
-            <div class="tile"><span class="k">AVG DIST</span><b>${num(s.avgDistance) || '—'}${num(s.avgDistance) ? '<small>FT</small>' : ''}</b></div>
+            ${num(s.outOfPark) ? `<div class="tile gold oop"><span class="k">OUT OF PARK</span><b>${num(s.outOfPark)}</b></div>` : `<div class="tile"><span class="k">AVG DIST</span><b>${num(s.avgDistance) || '—'}${num(s.avgDistance) ? '<small>FT</small>' : ''}</b></div>`}
           </div>
           <div class="ro-post stg" style="--i:3"><span class="spin"></span><span class="ro-post-t">POSTING TO LEADERBOARD…</span></div>
         </div>
@@ -718,7 +971,7 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
           <div class="ro-row"><button class="btn btn-ghost" data-act="change"><span>${IC.swap}CHANGE FOX</span></button>
           <button class="btn btn-ghost" data-act="home"><span>${IC.home}HOME</span></button></div>
         </div>
-        <div class="ro-board stg" style="--i:3"><div class="ro-board-h"><span>${IC.trophy}LEADERBOARD</span><em>${esc(fmtDate(s.date || chicagoDate()))}</em></div><div class="js-lb"></div></div>
+        <div class="ro-board stg" style="--i:3"><div class="ro-board-h"><span>${IC.trophy}LEADERBOARD</span><em>${daily ? esc(fmtDate(s.date || chicagoDate())) : 'ALL-TIME'}</em></div><div class="js-lb"></div></div>
       </div>`);
     countUp(el.querySelector('.js-final'), num(s.score), { from: 0, ms: 1400, delay: 350 });
     const date = s.date || chicagoDate();
@@ -732,7 +985,9 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
           .catch(() => { if (n === reqN && S.boardCtl === ctl) ctl.render({ ok: false, rows: [], remote: false }, tab, district); });
       } else emit('board-tab', { tab, district, from: 'roundover' });
     };
-    const ctl = boardPanel(el.querySelector('.js-lb'), { tab: 'today', district: '', me, compact: true, onChange: load });
+    // Daily-challenge rounds rank on TODAY; free play ranks ALL-TIME (the Worker/net.js rank follows the round's mode).
+    const homeTab = daily ? 'today' : 'alltime', rankWord = daily ? 'TODAY' : 'ALL-TIME';
+    const ctl = boardPanel(el.querySelector('.js-lb'), { tab: homeTab, district: '', me, compact: true, onChange: load });
     S.boardCtl = ctl; ctl.loading();
     const post = el.querySelector('.ro-post'); const postT = el.querySelector('.ro-post-t');
     const setPost = (cls, html) => { post.className = `ro-post show ${cls}`; postT.innerHTML = html; };
@@ -740,15 +995,18 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
     if (sub && typeof sub.then === 'function') {
       sub.then(r => {
         if (S.boardCtl !== ctl) return;
-        if (!r) { setPost('warn', me.name ? 'SCORE NOT POSTED' : 'ADD A NAME TO POST SCORES'); load('today', ''); return; }
-        if (r.ok && r.remote !== false) setPost(r.rank && r.rank <= 3 ? 'gold' : 'ok', r.rank ? `${IC.check}POSTED · <b>#${num(r.rank)}</b> TODAY` : `${IC.check}POSTED TO THE LEADERBOARD`);
-        else if (r.ok) setPost('warn', 'SAVED ON THIS DEVICE · LEADERBOARD OFFLINE');
+        if (!r) { setPost('warn', me.name ? 'SCORE NOT POSTED' : 'ADD A NAME TO POST SCORES'); load(homeTab, ''); return; }
+        const rank = num(r.rank) || num(r.boards && r.boards[homeTab]) || 0;
+        const lr = num(r.boards && r.boards.longest);
+        const longTxt = lr && lr <= 10 ? ` <span class="ro-post-sub">· LONGEST <b>#${lr}</b></span>` : '';
+        if (r.ok && r.remote !== false) setPost(rank && rank <= 3 ? 'gold' : 'ok', rank ? `${IC.check}POSTED · <b>#${rank}</b> ${rankWord}${longTxt}` : `${IC.check}POSTED TO THE LEADERBOARD`);
+        else if (r.ok) setPost('warn', rank ? `SAVED ON THIS DEVICE · #${rank}${daily ? ' TODAY' : ''} · OFFLINE` : 'SAVED ON THIS DEVICE · LEADERBOARD OFFLINE');
         else setPost('warn', 'COULDN\'T POST · SAVED ON THIS DEVICE');
-        const b = r.boards && (r.boards.today || r.boards.day);
-        if (b && (Array.isArray(b) || Array.isArray(b.rows))) ctl.render(Array.isArray(b) ? { ok: true, rows: b, remote: r.remote } : { remote: r.remote, ...b }, 'today', '');
-        else load('today', '');
-      }, () => { if (S.boardCtl === ctl) { setPost('warn', 'COULDN\'T REACH THE LEADERBOARD'); load('today', ''); } });
-    } else { setPost('muted', 'PRACTICE ROUND · NOT POSTED'); load('today', ''); }
+        const b = r.boards && r.boards[homeTab];
+        if (b && (Array.isArray(b) || Array.isArray(b.rows))) ctl.render(Array.isArray(b) ? { ok: true, rows: b, remote: r.remote } : { remote: r.remote, ...b }, homeTab, '');
+        else load(homeTab, '');
+      }, () => { if (S.boardCtl === ctl) { setPost('warn', 'COULDN\'T REACH THE LEADERBOARD'); load(homeTab, ''); } });
+    } else { setPost('muted', 'PRACTICE ROUND · NOT POSTED'); load(homeTab, ''); }
     onAct(el, act => {
       if (act === 'again') emit('again', {});
       else if (act === 'change') emit('change-fox', {});
@@ -786,6 +1044,7 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
   }
   function settings(cur = {}) {
     Object.assign(S.prefs, Object.fromEntries(Object.entries(cur || {}).filter(([k]) => k in S.prefs)));
+    setSwingMode(S.prefs.swing);
     const P = S.prefs;
     const tog = (k, lab, ic, sub) => `<button class="set-row" data-k="${k}" role="switch" aria-checked="${!!P[k]}"><span class="set-ic">${ic}</span><span class="set-t"><b>${lab}</b><small>${sub}</small></span><span class="sw"><i></i></span></button>`;
     L.modal.innerHTML = `<div class="modal-back" data-close="1"></div><div class="modal" role="dialog" aria-modal="true" aria-label="Settings">
@@ -795,6 +1054,8 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
       ${tog('music', 'MUSIC', IC.music, 'Ballpark organ between pitches')}
       ${tog('haptics', 'HAPTICS', IC.buzz, 'Vibration on contact')}</div>
       <div class="set-col">
+      <div class="set-row set-q"><span class="set-ic">${IC.swipe}</span><span class="set-t"><b>SWING CONTROL</b><small>Swipe across the plate, or a big SWING button</small></span></div>
+      <div class="seg seg2" role="radiogroup" aria-label="Swing control">${[['swipe', 'SWIPE'], ['button', 'BUTTON']].map(([k, l]) => `<button role="radio" data-sw="${k}" aria-checked="${P.swing === k}">${l}</button>`).join('')}</div>
       <div class="set-row set-q"><span class="set-ic">${IC.gfx}</span><span class="set-t"><b>GRAPHICS</b><small>Lower = smoother on older phones</small></span></div>
       <div class="seg" role="radiogroup" aria-label="Graphics quality">${['auto', 'high', 'medium', 'low'].map(q => `<button role="radio" data-q="${q}" aria-checked="${P.quality === q}">${q.toUpperCase()}</button>`).join('')}</div>
       <button class="btn btn-primary btn-md modal-done" data-close="1"><span>DONE</span></button>
@@ -802,7 +1063,8 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
     L.modal.classList.add('open');
     const m = L.modal.querySelector('.modal');
     m.addEventListener('click', e => {
-      const r = e.target.closest('.set-row[data-k]'); const q = e.target.closest('[data-q]');
+      const r = e.target.closest('.set-row[data-k]'); const q = e.target.closest('[data-q]'); const sw = e.target.closest('[data-sw]');
+      if (sw) { setSwingMode(sw.getAttribute('data-sw')); m.querySelectorAll('[data-sw]').forEach(b => b.setAttribute('aria-checked', String(b === sw))); buzz(6); emit('setting', { swing: S.prefs.swing }); emit('sfx', { name: 'ui_tap' }); }
       if (r) { const k = r.getAttribute('data-k'); P[k] = !P[k]; r.setAttribute('aria-checked', String(P[k])); buzz(6); emit('setting', { [k]: P[k] }); emit('sfx', { name: 'ui_tap' }); }
       if (q) { P.quality = q.getAttribute('data-q'); m.querySelectorAll('[data-q]').forEach(b => b.setAttribute('aria-checked', String(b === q))); buzz(6); emit('setting', { quality: P.quality }); emit('sfx', { name: 'ui_tap' }); }
     });
@@ -817,11 +1079,12 @@ export function createUI(root, { onEvent = () => {}, assets = null, characters =
   }
   function hide() { closeScreen(); clearFx(); closeModal(true); }
 
-  setAim(0); laneLabels();
+  setAim(0); laneLabels(); setSwingMode(S.prefs.swing);
 
   return {
     boot, title, nameEntry, characterSelect, parkSelect, intro, hud, hideHud, pitchCallout,
     aim: setAim, armInput, result, roundOver, leaderboard, toast, settings, hide,
+    /** v2 */ outOfPark, wave, setSwingMode, get swingMode() { return S.prefs.swing; }, get lastSwing() { return S.lastSwing || null; },
     /** extras (not in CONTRACT; safe to ignore) */
     get screen() { return S.screen; }, get aimValue() { return S.aim; }, el: W,
     dispose() { window.removeEventListener('keydown', onKey); timers.forEach(clearTimeout); W.remove(); },

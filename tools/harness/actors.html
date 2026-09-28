@@ -6,7 +6,9 @@
 <body><canvas id="c"></canvas><div id="hud"></div>
 <script type="module">
 // Stand-in scene + scripted demo for actors.js / camera.js / fx.js.
-// URL: ?phase=stance|pitch|swing|contact|flight|homer|landed|take  &t=<s>  &char=rocco  &park=wrigley
+// URL: ?phase=stance|windup|pitch|swing|contact|flight|homer|landed|take  &t=<s>  &char=rocco  &park=wrigley
+//      &model=0 (no rigged GLBs)  &bs=0.72 (bat speed)  &aim=0  &up=0 (uppercut)  &lead=<s>  &view=side|back|front|three|batcam|pitcher
+//      window.__h.sheet({ bs, view, times:[…] }) → dataURL contact sheet of swing key frames
 //      &art=0 (force procedural fallback)  &tod=day|dusk|night  &post=0 (no bloom)  &kind=homer|flyout|grounder|liner|foul|popup
 //      &ev=112&la=28&spray=-12  &pitch=fastball  &shot=reverse|blimp  &mode=title|select|result (camera only)
 // No phase → live looping demo.  window.__h.run(phase, t) re-runs deterministically (logic stepped at 60 Hz, one render).
@@ -18,11 +20,14 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import * as D from '/src/data.js';
 import { createActors } from '/src/actors.js';
 import { createDirector } from '/src/camera.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const Q = new URLSearchParams(location.search);
 const P = (k, d) => (Q.has(k) ? Q.get(k) : d);
 const charId = P('char', 'rocco'), parkId = P('park', 'wrigley'), tod = P('tod', 'day');
-const ART = P('art', '1') !== '0', POST = P('post', '1') !== '0';
+const ART = P('art', '1') !== '0', POST = P('post', '1') !== '0', MODELS = P('model', '1') !== '0';
 const char = D.CHAR_BY_ID[charId] || D.CHARACTERS[0];
 
 // ---------------------------------------------------------------- asset shim (CONTRACT Assets interface)
@@ -32,17 +37,21 @@ async function loadAssetShim(keys) {
   let man = null;
   try { man = await (await fetch('/assets/manifest.json')).json(); } catch { return shim(); }
   const imgMeta = man.images || man;
+  const models = {}, gl = new GLTFLoader(); gl.setMeshoptDecoder(MeshoptDecoder);
+  shim.model = k => { const m = imgMeta[k]; if (!MODELS || !m || m.type !== 'model') return Promise.resolve(null); return models[k] || (models[k] = MeshoptDecoder.ready.then(() => gl.loadAsync('/assets/' + m.src)).catch(e => { console.warn('model', k, e); return null; })); };
+  shim.entry = k => (MODELS && imgMeta[k]) || null;
   await Promise.all(keys.map(k => new Promise(res => {
     const m = imgMeta[k]; if (!m) return res();
     const im = new Image(); im.onload = () => { imgs[k] = im; metas[k] = m; res(); }; im.onerror = () => res(); im.src = '/assets/' + m.src;
   })));
   return shim();
   function shim() {
-    return {
+    return Object.assign(shim, {
       get: k => imgs[k] || null, meta: k => metas[k] || null,
       texture(T, k, o = {}) { const im = imgs[k]; if (!im) return null; const t = new T.Texture(im); t.needsUpdate = true; if (o.srgb !== false) t.colorSpace = T.SRGBColorSpace; if (o.repeat) { t.wrapS = t.wrapT = T.RepeatWrapping; t.repeat.set(...o.repeat); } return t; },
       receipt: { loaded: Object.keys(imgs).length, failed: 0, total: keys.length, ms: 0 },
-    };
+      buffer: () => null,
+    });
   }
 }
 
@@ -103,6 +112,7 @@ if (!realStadium) {
     m.position.set(0, Hh / 2 - Hh * (1 - hz) + 30, 0); m.scale.x = -1; scene.add(m);
   }
   scene.fog = new THREE.Fog(LIGHT.fog, 900, 5200);
+  { const pm = new THREE.PMREMGenerator(renderer); scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture; scene.environmentIntensity = tod === 'night' ? 0.25 : tod === 'dusk' ? 0.35 : 0.5; }
   const hemi = new THREE.HemisphereLight(LIGHT.hemiS, LIGHT.hemiG, LIGHT.hemiI); scene.add(hemi);
   const sun = new THREE.DirectionalLight(LIGHT.sun, LIGHT.sunI);
   sun.position.set(...LIGHT.sunDir.map(v => v * 300)); sun.target.position.set(0, 0, -40);
@@ -171,7 +181,10 @@ if (!realStadium) {
 }
 
 // ---------------------------------------------------------------- actors / director
-const actors = createActors(THREE, { scene, assets, charId, parkId, onEvent: (t, p) => (window.__events = window.__events || []).push(t) });
+const actors = createActors(THREE, { scene, assets, charId, parkId, quality: P('q', 'high'), onEvent: (t, p) => (window.__events = window.__events || []).push(t) });
+const tModel0 = performance.now();
+if (MODELS) await actors.modelsReady();
+window.__modelMs = Math.round(performance.now() - tModel0);
 let director = createDirector(THREE, camera, { parkId, bats: char.bats, occluders: realStadium ? realStadium.group : null });
 director.resize(camera.aspect);
 camera.fov = director.fovFor(camera.aspect); camera.updateProjectionMatrix();
@@ -250,7 +263,11 @@ function* timeline(phase = 'homer', tArg) {
   actors.reset();
   const camMode = P('mode', null);
   if (camMode) { director.setMode(camMode, { instant: true, result: res }); yield* S(Math.round((+tArg || 2) * 60)); return info(); }
-  const ov = Q.has('cam') ? { pos: Q.get('cam').split(',').map(Number), look: (Q.get('look') || '0,3,-60').split(',').map(Number), fov: Q.has('fov') ? +Q.get('fov') : undefined } : null;
+  const sx = char.bats === 'L' ? 1 : -1;
+  const VIEWS = { side: { pos: [sx * 2.8, 3.6, 14], look: [sx * 2.8, 3.1, 0], fov: 32 }, back: { pos: [sx * 14, 4.2, 1.2], look: [sx * 2.6, 3.0, 0], fov: 30 }, front: { pos: [sx * -9, 3.8, -6], look: [sx * 2.6, 3.0, 0.3], fov: 32 },
+    three: { pos: [sx * 9, 5.5, 11], look: [sx * 2.2, 2.9, -0.5], fov: 30 }, top: { pos: [sx * 2.6, 22, 0.4], look: [sx * 2.6, 0, 0.3], fov: 32 }, pitcher: { pos: [-9, 5, -46], look: [-0.5, 3.5, -58], fov: 32 } };
+  const vw = OV.view || P('view', null);
+  const ov = Q.has('cam') ? { pos: Q.get('cam').split(',').map(Number), look: (Q.get('look') || '0,3,-60').split(',').map(Number), fov: Q.has('fov') ? +Q.get('fov') : undefined } : (vw && VIEWS[vw]) || null;
   director.setMode('batting', { instant: true, override: ov });
   yield* S(90);
   if (phase === 'stance') { yield* S(Math.round((+tArg || 1) * 60)); return info(); }
@@ -259,35 +276,41 @@ function* timeline(phase = 'homer', tArg) {
   const tw = tArg != null && phase === 'windup' ? +tArg : null;
   while (timer > 0) { if (tw != null && s.releaseIn - timer >= tw) return info(); timer -= DT; yield* S(1); }
   let pt = -timer;
-  const swingAt = phase === 'take' ? 1e9 : res.contactT - D.TUNING.swingLead;
-  const pitchStop = phase === 'pitch' ? (tArg != null ? +tArg : pitch.flightTime * 0.66) : phase === 'swing' ? swingAt + (tArg != null ? +tArg : 0.08) : 1e9;
-  let swung = false;
+  const BS = +(OV.bs ?? P('bs', 0.72));
+  const LEAD = +(OV.lead ?? P('lead', 0.2 - 0.11 * BS));
+  const swingAt = phase === 'take' ? 1e9 : res.contactT - LEAD;
+  const pitchStop = phase === 'pitch' ? (tArg != null ? +tArg : pitch.flightTime * 0.66) : phase === 'swing' ? swingAt + (tArg != null ? +tArg : 0.08) - 1e-6 : 1e9;
+  let swung = false, Tsw = 1e9;
+  const swClock = () => (phase === 'swing' && tArg != null && T - Tsw >= +tArg - 1e-6);
   while (true) {
-    if (!swung && pt >= swingAt) { actors.swing(); swung = true; }
-    if (swung && pt >= res.contactT) break;
+    if (!swung && pt >= swingAt) { Tsw = T; actors.swing({ batSpeed: BS, leadT: LEAD, aim: +(OV.aim ?? P('aim', 0)), uppercut: +(OV.up ?? P('up', 0)), pitchLoc: pitch.plateLoc, kind: res.kind, result: res.kind === 'whiff' ? null : res }); swung = true; }
+    if (swung && pt >= res.contactT && res.kind !== 'whiff') break;
+    if (swung && res.kind === 'whiff' && swClock()) return info();
     actors.setPitchTime(pt, pitch);
     if (pt >= pitchStop) return info();
-    if (pt >= pitch.flightTime + D.TUNING.takeGrace) { actors.take({ kind: 'strike', swung: false }); yield* S(Math.round((+tArg || 0.3) * 60)); return info(); }
+    if (pt >= pitch.flightTime + D.TUNING.takeGrace) { actors.take(res.kind === 'whiff' ? res : { kind: 'strike', swung: false }); yield* S(Math.round((+tArg || 0.3) * 60)); return info(); }
     pt += DT; yield* S(1);
   }
   actors.setPitchTime(res.contactT, pitch);
   actors.contact(res);
+  if (swClock()) return info();
   const sweet = res.contact === 'sweet';
-  if (sweet) director.shake(0.6);
-  director.follow(res);
+  if (sweet && !OV.fixed) director.shake(0.6);
+  if (!OV.fixed) director.follow(res);
   let hit = sweet ? 0.085 : 0.03;
   if (phase === 'contact') { yield* S(Math.max(1, Math.round((tArg != null ? +tArg : 0.03) * 60))); return info(); }
-  while (hit > 0) { hit -= DT; yield* S(1); }
+  while (hit > 0) { hit -= DT; yield* S(1); if (OV.nofx) actors.fx.clear && actors.fx.clear(); if (swClock()) return info(); }
   let tau = 0; const end = res.path.pts[res.path.pts.length - 4]; const homer = res.kind === 'homer';
   let homerCam = false;
   const stopTau = phase === 'flight' ? (tArg != null ? +tArg : 1.1) : phase === 'homer' ? (tArg != null ? +tArg : Math.min((res.path.fenceT || 3) + (OV.homerOffset ?? -0.2), res.hangTime - 0.02)) : 1e9;
   while (tau < end) {
     const ts = tau < 0.22 ? (homer ? 0.45 : 0.7) : homer ? 1.25 : 1.6;
     tau += DT * ts;
-    if (homer && !homerCam && res.path.fenceT != null && tau >= Math.max(0.6, res.path.fenceT - 0.9)) { homerCam = true; director.setMode('homer', { result: res, shot: OV.shot || P('shot', undefined) }); }
+    if (OV.nofx) actors.fx.clear && actors.fx.clear();
+    if (homer && !OV.fixed && !homerCam && res.path.fenceT != null && tau >= Math.max(0.6, res.path.fenceT - 0.9)) { homerCam = true; director.setMode('homer', { result: res, shot: OV.shot || P('shot', undefined) }); }
     actors.ballFlightT(Math.min(tau, end));
     yield* S(1);
-    if (tau >= stopTau) return info();
+    if (tau >= stopTau || swClock()) return info();
   }
   actors.ballFlightT(end); actors.settle(res);
   yield* S(Math.round((tArg != null ? +tArg : 1.4) * 60));
@@ -298,7 +321,24 @@ function* timeline(phase = 'homer', tArg) {
 function* S(n = 1) { for (let i = 0; i < n; i++) { step(1); yield; } }
 function run(phase, tArg) { const g = timeline(phase, tArg); let r; while (!(r = g.next()).done); return r.value; }
 
-window.__h = { homer(o, phase = 'landed', t) { OV = o || {}; const r = run(phase, t); render(); OV = {}; return r; }, run, actors, get director() { return director; }, render, scene, camera, renderer, THREE, D };
+function sheet({ bs = 0.72, view = 'side', times = null, cols = 4, w = 300, h = 400, kind = 'homer', aim = 0, up = 0, px, py, fx = false, phase = 'swing', cam = null, label = null } = {}) {
+  const L = 0.2 - 0.11 * bs;
+  times = times || [-0.4, -0.12, 0.0, L * 0.4, L * 0.75, L, L + 0.06, L + 0.14, L + 0.26, L + 0.45, L + 0.7, L + 1.1];
+  const cv = document.createElement('canvas'), rows = Math.ceil(times.length / cols); cv.width = cols * w; cv.height = rows * h;
+  const g = cv.getContext('2d'); g.fillStyle = '#000'; g.fillRect(0, 0, cv.width, cv.height);
+  times.forEach((t, i) => {
+    OV = { bs, view, kind, aim, up, fixed: true, nofx: !fx }; if (px != null) Q.set('px', px); if (py != null) Q.set('py', py);
+    const r = run(phase, t);
+    if (cam) { camera.position.set(...cam.pos); camera.lookAt(...cam.look); camera.fov = cam.fov || camera.fov; camera.updateProjectionMatrix(); }
+    render();
+    const src = renderer.domElement; const s = Math.min(src.width / w, src.height / h);
+    g.drawImage(src, (src.width - w * s) / 2, (src.height - h * s) / 2, w * s, h * s, (i % cols) * w, Math.floor(i / cols) * h, w, h);
+    g.fillStyle = '#ffd257'; g.font = 'bold 16px monospace'; g.fillText(label === 'raw' ? t.toFixed(2) + 's' : (t - L >= 0 ? '+' : '') + (t - L).toFixed(3) + 's ' + (r.state.batterPhase || ''), (i % cols) * w + 6, Math.floor(i / cols) * h + 20);
+  });
+  OV = {};
+  return cv.toDataURL('image/jpeg', 0.85);
+}
+window.__h = { sheet, homer(o, phase = 'landed', t) { OV = o || {}; const r = run(phase, t); render(); OV = {}; return r; }, run, actors, get director() { return director; }, render, scene, camera, renderer, THREE, D };
 const phase = P('phase', Q.has('mode') ? 'cam' : null);
 if (phase) {
   const r = run(phase, Q.has('t') ? +Q.get('t') : undefined);

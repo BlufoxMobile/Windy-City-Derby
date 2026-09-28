@@ -4,14 +4,17 @@
 // Covers: API shape, determinism, pitches, calibration table, wind/weather, fence/HR edge cases,
 // wall balls, scoreboard, foul lines, takes, swing model, scoring/multipliers/clutch/bonuses/record,
 // round-over flag, path format.
+// v2: swipe swing (batSpeed / uppercut / swingLeadFor), video boards, Fan Deck, out of the park,
+// round events (wave / outOfPark), distance cap and the leaderboard score bounds.
 // ============================================================================
 import assert from 'node:assert/strict';
 import {
-  createRound, simulateFlight, battedBall, pitchAt, perfectTap, idealAim, aimBand, insideness, SIM_K, SIM_SELFTEST, normalizeConditions,
+  createRound, simulateFlight, battedBall, pitchAt, perfectTap, idealAim, idealUppercut, aimBand, insideness, SIM_K, SIM_SELFTEST, normalizeConditions,
+  swingLeadFor, batSpeedMph,
 } from '../src/sim.js';
 import {
   CHARACTERS, CHAR_BY_ID, PARKS, PITCHES, BREAKING, ZONE, RELEASE, TUNING, OUTS_PER_ROUND, VERSION,
-  pitchMix, fenceDistance, surfaceHeight, scoreboardDistance, dailyConfig,
+  pitchMix, fenceDistance, surfaceHeight, scoreboardDistance, dailyConfig, classifyLanding, isOutOfPark,
 } from '../src/data.js';
 
 let passed = 0, failed = 0;
@@ -54,10 +57,13 @@ test('API: exports + Round shape match CONTRACT', () => {
   for (const k of ['showAt', 'preLoc', 'trueLoc', 'snapAt']) assert.ok(k in p.ring, 'ring.' + k);
   const s = R.resolveSwing(p, { tapT: perfectTap(p), aim: 0 });
   for (const k of ['kind', 'swung', 'timingErr', 'timingLabel', 'quality', 'contact', 'exitVelo', 'launch', 'spray', 'distance', 'hangTime', 'contactT', 'contactPos', 'path', 'bonus']) assert.ok(k in s, 'SwingResult.' + k);
+  for (const k of ['batSpeed', 'leadT', 'outOfPark']) assert.ok(k in s, 'SwingResult.' + k + ' (v2)');
+  assert.equal(s.batSpeed, TUNING.batSpeedRef, 'default batSpeed = button'); near(s.leadT, TUNING.swingLead, 1e-12, 'default lead');
   for (const k of ['pts', 'apex', 'landing', 'hitBoard', 'clearedBoard', 'fenceT']) assert.ok(k in s.path, 'path.' + k);
   const t = R.resolveTake(p); assert.equal(t.swung, false); assert.ok(t.kind === 'ball' || t.kind === 'strike');
   const a = R.apply(s);
-  for (const k of ['scoreDelta', 'callouts', 'out', 'roundOver', 'streak', 'mult']) assert.ok(k in a, 'apply().' + k);
+  for (const k of ['scoreDelta', 'callouts', 'out', 'roundOver', 'streak', 'mult', 'events']) assert.ok(k in a, 'apply().' + k);
+  assert.ok(Array.isArray(a.events));
   const sum = R.summary();
   for (const k of ['score', 'homers', 'longest', 'outs', 'pitches', 'bestStreak', 'charId', 'parkId', 'mode', 'date', 'avgDistance', 'v']) assert.ok(k in sum, 'summary.' + k);
   assert.equal(sum.v, VERSION); assert.equal(sum.date, '2026-09-26'); assert.equal(sum.pitches, 1);
@@ -191,7 +197,8 @@ test('pitches: eye — clockRate, read ring timing and pre-break location', () =
 });
 
 // ---------------------------------------------------------------------------- flight calibration
-const CAL = [[100, 28, 370], [105, 28, 405], [110, 28, 440], [115, 30, 475], [95, 25, 320]];
+// v2: Statcast-like top end (v1's 115@30≈475 / 119@28≈507 over-carried the monster shots)
+const CAL = [[95, 25, 326], [100, 28, 367], [105, 28, 400], [110, 28, 433], [115, 30, 464], [119, 28, 491]];
 test('flight: calibration table (no wind) within ±8 ft', () => {
   for (const [ev, la, tgt] of CAL) near(dist(ev, la), tgt, 8, `${ev} mph @ ${la}°`);
 });
@@ -250,8 +257,8 @@ test('fence: homers come to rest on surfaceHeight(); projected distance ≥ land
 });
 test('fence: Wrigley bonus zones — Waveland, Sheffield, rooftops', () => {
   const find = (sprays, pred) => { for (const sp of sprays) for (let ev = 105; ev <= 125; ev += 0.5) for (const la of [24, 28, 32]) { const b = battedBall('wrigley', { exitVelo: ev, launch: la, spray: sp, conditions: CALM, from: FROM, samples: false }); if (pred(b)) return b; } return null; };
-  assert.ok(find([-30, -25, -20], b => b.bonus === 'street_l'), 'ON WAVELAND reachable');
-  assert.ok(find([20, 25, 30], b => b.bonus === 'street_r'), 'ON SHEFFIELD reachable');
+  assert.ok(find([-40, -35, -12, -10], b => b.bonus === 'street_l' && b.outOfPark), 'ON WAVELAND reachable (out of the park)');
+  assert.ok(find([30, 35, 40, 12], b => b.bonus === 'street_r' && b.outOfPark), 'ON SHEFFIELD reachable (out of the park)');
   const roof = find([-35, -30, 30, 35], b => b.bonus === 'rooftop'); assert.ok(roof, 'rooftop reachable');
   assert.equal(roof.flight.rest[1], PARKS.wrigley.rooftops.h + SIM_K.ballR * 0.5, 'rests on the roof');
   const seats = battedBall('wrigley', { exitVelo: 104, launch: 28, spray: -30, conditions: CALM, from: FROM });
@@ -331,17 +338,22 @@ test('swing: contact time = tapT − inputLatencyComp + swingLead; timing labels
 
 test('swing: fair — perfect timing + location-matched aim homers the vast majority of the time (every fox, both parks)', () => {
   for (const c of CHARACTERS) for (const park of ['wrigley', 'rate']) {
-    let n = 0, h = 0;
+    let n = 0, h = 0, h0 = 0, hb = 0;
     for (let seed = 1; seed <= 40; seed++) {
       const R = createRound({ charId: c.id, parkId: park, seed: 5000 + seed, conditions: CALM });
       for (let k = 0; k < 30; k++) {
         const p = R.nextPitch(); if (!p.inZone) continue;
-        const r = R.resolveSwing(p, { tapT: perfectTap(p), aim: idealAim(c, p.plateLoc[0], p.type), samples: false });
-        n++; if (r.kind === 'homer') h++;
-        assert.ok(r.timingLabel === 'PERFECT');
+        const aim = idealAim(c, p.plateLoc[0], p.type), uppercut = idealUppercut(c, p.plateLoc[1], p.type);
+        const r = R.resolveSwing(p, { tapT: perfectTap(p), aim, uppercut, samples: false });
+        const r0 = R.resolveSwing(p, { tapT: perfectTap(p), aim, samples: false });                        // level swing
+        const rb = R.resolveSwing(p, { tapT: perfectTap(p, 0.95), aim, uppercut, batSpeed: 0.95, samples: false }); // swiping hard
+        n++; if (r.kind === 'homer') h++; if (r0.kind === 'homer') h0++; if (rb.kind === 'homer') hb++;
+        assert.ok(r.timingLabel === 'PERFECT' && rb.timingLabel === 'PERFECT');
       }
     }
-    assert.ok(h / n >= 0.85, `${c.id} @ ${park}: ${(100 * h / n).toFixed(0)}% homers`);
+    assert.ok(h / n >= 0.85, `${c.id} @ ${park}: ${(100 * h / n).toFixed(0)}% homers (matched uppercut)`);
+    assert.ok(hb / n >= 0.85, `${c.id} @ ${park}: ${(100 * hb / n).toFixed(0)}% homers (hard swipe)`);
+    assert.ok(h0 / n >= 0.72, `${c.id} @ ${park}: ${(100 * h0 / n).toFixed(0)}% homers (level swing)`);
   }
 });
 
@@ -406,7 +418,7 @@ test('swing: character traits — Blaze vs breaking, Skye streak power, Rocco bi
   const ev0 = S.resolveSwing(ps, { tapT: perfectTap(ps), aim: 0.5, samples: false }).exitVelo;
   for (let k = 0; k < 5; k++) S.apply(homerResult(400));
   const ev5 = S.resolveSwing(ps, { tapT: perfectTap(ps), aim: 0.5, samples: false }).exitVelo;
-  assert.ok(ev5 - ev0 > 0.8 * CHAR_BY_ID.skye.swing.streakEvCap, `Skye +${(ev5 - ev0).toFixed(1)} mph on a 5-homer streak`);
+  assert.ok(ev5 - ev0 > 0.8 * SIM_K.streakPost * CHAR_BY_ID.skye.swing.streakEvCap, `Skye +${(ev5 - ev0).toFixed(1)} mph on a 5-homer streak`);
   const evMax = id => { const Rx = createRound({ charId: id, seed: 9 }); const px = Rx.nextPitch(); return Rx.resolveSwing(px, { tapT: perfectTap(px), aim: 0, samples: false }).exitVelo; };
   const evs = CHARACTERS.map(c => [c.id, evMax(c.id)]).sort((a, b) => b[1] - a[1]);
   assert.equal(evs[0][0], 'rocco', JSON.stringify(evs));
@@ -462,22 +474,28 @@ test('scoring: clutch ×1.5 on the last out, stacks with the streak', () => {
 });
 
 test('scoring: park bonuses, moonshot / way out, new record (once per new best)', () => {
+  const W = PARKS.wrigley.bonus, RB = PARKS.rate.bonus;
   const R = createRound({ charId: 'rocco', parkId: 'wrigley', seed: 1, personalBest: 440 });
   let a = R.apply(homerResult(430, { bonus: 'street_l' }));
-  assert.equal(a.scoreDelta, 430 + 250); assert.ok(a.callouts.some(c => c.text === 'ON WAVELAND! +250' && c.key === 'street_l'));
+  assert.equal(a.scoreDelta, 430 + W.street_l.points); assert.ok(a.callouts.some(c => c.text === `ON WAVELAND! +${W.street_l.points}` && c.key === 'street_l' && c.outOfPark));
+  assert.ok(a.events.includes('outOfPark'), 'Waveland = out of the park');
   R.apply(outResult());
   a = R.apply(homerResult(455)); assert.equal(a.scoreDelta, 455 + 100 + 250);
   assert.ok(a.callouts.some(c => c.text === 'MOONSHOT +100') && a.callouts.some(c => c.text === 'NEW RECORD +250'));
+  assert.ok(!a.events.includes('outOfPark'));
   R.apply(outResult());
   a = R.apply(homerResult(450)); assert.ok(!a.callouts.some(c => c.kind === 'record'), 'not a new best'); assert.equal(a.scoreDelta, 450 + 100);
   R.apply(outResult());
   a = R.apply(homerResult(512, { bonus: 'over_cf' }));
-  assert.equal(a.scoreDelta, 512 + 600 + 250 + 250, 'over the board + way out (not also moonshot) + record');
-  assert.ok(a.callouts.some(c => c.text === 'OVER THE BOARD! +600') && a.callouts.some(c => c.text === 'WAY OUT +250') && !a.callouts.some(c => c.kind === 'moonshot'));
+  assert.equal(a.scoreDelta, 512 + W.over_cf.points + 250 + 250, 'over the board + way out (not also moonshot) + record');
+  assert.ok(a.callouts.some(c => c.text === `OVER THE SCOREBOARD! +${W.over_cf.points}`) && a.callouts.some(c => c.text === 'WAY OUT +250') && !a.callouts.some(c => c.kind === 'moonshot'));
   assert.equal(R.longest, 512);
+  a = R.apply(homerResult(420, { bonus: 'videoboard' })); assert.equal(a.scoreDelta, Math.round(420 * 1.5) + W.videoboard.points); assert.ok(!a.events.includes('outOfPark'), 'off the video board stays in the park');
   const Rt = createRound({ charId: 'nova', parkId: 'rate', seed: 1, personalBest: 0 });
-  a = Rt.apply(homerResult(395, { bonus: 'concourse' })); assert.equal(a.scoreDelta, 395 + 300 + 250, 'first homer at a park is a record');
-  assert.ok(a.callouts.some(c => c.text === 'CONCOURSE SHOT! +300'));
+  a = Rt.apply(homerResult(395, { bonus: 'concourse' })); assert.equal(a.scoreDelta, 395 + RB.concourse.points + 250, 'first homer at a park is a record');
+  assert.ok(a.callouts.some(c => c.text === `CONCOURSE SHOT! +${RB.concourse.points}`)); assert.ok(!a.events.includes('outOfPark'), 'concourse is still in the park');
+  a = Rt.apply(homerResult(505, { bonus: 'out_of_park' })); assert.ok(a.events.includes('outOfPark') && a.callouts.some(c => c.key === 'out_of_park'));
+  assert.equal(Rt.summary().outOfPark, 1);
 });
 
 test('scoring: out callouts (wall / warning track / whiff), idempotent apply, round over at 10 outs', () => {
@@ -508,6 +526,144 @@ test('round: full simulated rounds are consistent (score = Σ scoreDelta, summar
     assert.equal(s.longest, hrs.length ? Math.max(...hrs) : 0);
     assert.equal(s.avgDistance, hrs.length ? Math.round(hrs.reduce((a, b) => a + b, 0) / hrs.length) : 0);
   }
+});
+
+// ---------------------------------------------------------------------------- v2: swipe swing
+test('v2 swing: swingLeadFor — 0.20 s lazy → 0.12 s button → 0.09 s max effort, monotonic; contact = tapT − latency + lead', () => {
+  near(swingLeadFor(0), TUNING.swingLeadSlow, 1e-12); near(swingLeadFor(TUNING.batSpeedRef), TUNING.swingLead, 1e-12); near(swingLeadFor(1), TUNING.swingLeadFast, 1e-12);
+  near(swingLeadFor(), TUNING.swingLead, 1e-12, 'default'); near(swingLeadFor(2), TUNING.swingLeadFast, 1e-12, 'clamped'); near(swingLeadFor(NaN), TUNING.swingLead, 1e-12);
+  for (let b = 0; b < 1; b += 0.05) assert.ok(swingLeadFor(b + 0.05) < swingLeadFor(b), 'faster swing reaches the zone sooner');
+  const R = createRound({ charId: 'nova', seed: 4 }); const p = R.nextPitch();
+  for (const b of [0.2, 0.5, 0.72, 0.9, 1]) {
+    const r = R.resolveSwing(p, { tapT: perfectTap(p, b), aim: 0, batSpeed: b, samples: false });
+    near(r.timingErr, 0, 1e-12, 'perfectTap(p, b)'); near(r.leadT, swingLeadFor(b), 1e-12); near(r.contactT, p.tArrive, 1e-12);
+    near(r.rawContactT, perfectTap(p, b) - TUNING.inputLatencyComp + swingLeadFor(b), 1e-12); assert.equal(r.batSpeed, b);
+  }
+  // the same swing START with a faster swipe meets the ball earlier (timing error goes negative)
+  const t0 = perfectTap(p); assert.ok(R.resolveSwing(p, { tapT: t0, batSpeed: 1, samples: false }).timingErr < -0.02);
+  assert.equal(batSpeedMph(0), TUNING.batMph[0]); assert.equal(batSpeedMph(1), TUNING.batMph[1]); assert.ok(batSpeedMph(0.72) >= 70 && batSpeedMph(0.72) <= 75);
+});
+
+test('v2 swing: bat speed — harder = more EV (on good contact) and a smaller window; lazy = weak contact; uppercut lofts', () => {
+  const avg = (charId, b, u = 0, park = 'wrigley') => {
+    let ev = 0, la = 0, n = 0;
+    for (let seed = 1; seed <= 60; seed++) {
+      const R = createRound({ charId, parkId: park, seed: 900 + seed, conditions: CALM }); const p = R.nextPitch();
+      const r = R.resolveSwing(p, { tapT: perfectTap(p, b), aim: idealAim(charId, p.plateLoc[0], p.type), batSpeed: b, uppercut: u, samples: false });
+      if (r.kind === 'whiff') continue; ev += r.exitVelo; la += r.launch; n++;
+    }
+    return { ev: ev / n, la: la / n };
+  };
+  for (const c of ['rocco', 'jett']) {
+    const lazy = avg(c, 0.3), ref = avg(c, TUNING.batSpeedRef), hard = avg(c, 1);
+    assert.ok(hard.ev > ref.ev + 0.5 && ref.ev > lazy.ev + 5, `${c}: EV lazy ${lazy.ev.toFixed(1)} < button ${ref.ev.toFixed(1)} < max ${hard.ev.toFixed(1)}`);
+    assert.ok(lazy.ev > 75, 'a lazy swing still makes contact');
+  }
+  const up = avg('nova', 0.72, 1), lvl = avg('nova', 0.72, 0), down = avg('nova', 0.72, -1);
+  near(up.la - lvl.la, SIM_K.uppercutLaunch, 1.5, 'uppercut +1'); near(lvl.la - down.la, SIM_K.uppercutLaunch, 1.5, 'chop −1');
+  // window: the same 30 ms late costs a max-effort swing more quality than a button swing
+  const R = createRound({ charId: 'dex', seed: 7 }); const p = R.nextPitch();
+  const qb = R.resolveSwing(p, { tapT: perfectTap(p, 0.72) + 0.03, batSpeed: 0.72, samples: false }).q.t;
+  const qh = R.resolveSwing(p, { tapT: perfectTap(p, 1) + 0.03, batSpeed: 1, samples: false }).q.t;
+  const ql = R.resolveSwing(p, { tapT: perfectTap(p, 0.3) + 0.03, batSpeed: 0.3, samples: false }).q.t;
+  assert.ok(qh < qb && qb < ql, `timing quality at +30 ms: max ${qh.toFixed(3)} < button ${qb.toFixed(3)} < lazy ${ql.toFixed(3)}`);
+  // resolveSwing input sanitising
+  const r = R.resolveSwing(p, { tapT: perfectTap(p), batSpeed: 'x', uppercut: 7, samples: false }); assert.equal(r.batSpeed, TUNING.batSpeedRef); assert.equal(r.uppercut, 1);
+  assert.equal(R.resolveSwing(p, { tapT: perfectTap(p, 1), batSpeed: 1, samples: false }).maxEffort, true);
+});
+
+// ---------------------------------------------------------------------------- v2: boards, Fan Deck, out of the park
+test('v2 flight: video boards bounce the ball back into the bleachers (both parks); over the top leaves', () => {
+  for (const park of ['wrigley', 'rate']) for (const vb of PARKS[park].videoBoards) {
+    const sp = (vb.spray[0] + vb.spray[1]) / 2; let hit = null, over = null;
+    for (let ev = 105; ev <= 124 && !(hit && over); ev += 0.25) for (const la of [26, 30, 34]) {
+      const f = simulateFlight(park, { exitVelo: ev, launch: la, spray: sp, conditions: { wind: { mph: 18, dir: sp } }, from: FROM });
+      if (!hit && f.videoBoard === vb.id) hit = f;
+      if (!over && f.cleared && !f.videoBoard && Math.hypot(f.rest[0], f.rest[2]) > fenceDistance(park, sp) + PARKS[park].stands.depth + 1) over = f;
+    }
+    assert.ok(hit, `${park} ${vb.id} board can be hit`);
+    assert.equal(hit.event, 'vboard');
+    near(Math.hypot(hit.landing[0], hit.landing[2]), fenceDistance(park, Math.atan2(hit.landing[0], -hit.landing[2]) * 180 / Math.PI) + PARKS[park].stands.depth - 0.3, 0.8, 'hits the board face');
+    assert.ok(hit.landing[1] <= vb.top + 0.01, 'below the top');
+    const s = Math.atan2(hit.rest[0], -hit.rest[2]) * 180 / Math.PI, r = Math.hypot(hit.rest[0], hit.rest[2]);
+    assert.ok(r < fenceDistance(park, s) + PARKS[park].stands.depth && r > fenceDistance(park, s), 'bounces back into the bleachers');
+    near(hit.rest[1], surfaceHeight(park, s, r), 0.3, 'comes to rest on the seats');
+    const b = battedBall(park, { exitVelo: 0, launch: 0 }); assert.ok(b);
+    assert.equal(classifyLanding(park, { spray: s, r, y: hit.rest[1], videoBoard: hit.videoBoard }), 'videoboard');
+    if (over) assert.ok(!over.videoBoard, `${park} ${vb.id}: can clear the board`);
+  }
+});
+
+test('v2 flight: Rate Field Fan Deck — onto the deck or into its face, both "fan_deck"; in the park', () => {
+  const fd = PARKS.rate.fanDeck; let top = null, face = null;
+  for (let ev = 104; ev <= 124 && !(top && face); ev += 0.25) for (const la of [20, 24, 28, 32, 36]) for (const sp of [-4, 0, 4]) {
+    const b = battedBall('rate', { exitVelo: ev, launch: la, spray: sp, conditions: CALM, from: FROM });
+    if (b.flight.event === 'deck' && !top) top = b; if (b.flight.event === 'deckFace' && !face) face = b;
+  }
+  assert.ok(top && face, 'both reachable');
+  near(top.flight.rest[1], fd.h + SIM_K.ballR * 0.5, 1e-9, 'rests on the deck');
+  for (const b of [top, face]) { assert.equal(b.kind, 'homer'); assert.equal(b.bonus, 'fan_deck'); assert.equal(b.outOfPark, false); }
+  const r = Math.hypot(face.flight.rest[0], face.flight.rest[2]), s = Math.atan2(face.flight.rest[0], -face.flight.rest[2]) * 180 / Math.PI;
+  assert.ok(r - fenceDistance('rate', s) < fd.d[0], 'a face hit drops in front of the deck');
+});
+
+test('v2 out of the park: Wrigley street/rooftop/over the board = out; Rate concourse = in, beyond it = out', () => {
+  assert.deepEqual(PARKS.wrigley.outOfPark.slice().sort(), ['over_cf', 'rooftop', 'street_l', 'street_r']);
+  assert.ok(isOutOfPark('wrigley', 'street_l') && isOutOfPark('rate', 'out_of_park') && isOutOfPark('rate', 'over_cf'));
+  assert.ok(!isOutOfPark('wrigley', 'videoboard') && !isOutOfPark('rate', 'concourse') && !isOutOfPark('rate', 'fan_deck') && !isOutOfPark('wrigley', null));
+  const W = PARKS.wrigley, Rp = PARKS.rate;
+  assert.equal(classifyLanding('wrigley', { spray: -38, r: fenceDistance('wrigley', -38) + W.stands.depth + 10, y: 0.1 }), 'street_l');
+  assert.equal(classifyLanding('wrigley', { spray: 36, r: fenceDistance('wrigley', 36) + W.stands.depth + 10, y: 0.1 }), 'street_r');
+  assert.equal(classifyLanding('wrigley', { spray: -40, r: fenceDistance('wrigley', -40) + W.stands.depth + W.street.width + 20, y: W.rooftops.h }), 'rooftop');
+  assert.equal(classifyLanding('wrigley', { spray: -33, r: fenceDistance('wrigley', -33) + W.stands.depth + W.street.width + 20, y: 0 }), 'street_l', 'Kenmore Ave gap');
+  assert.equal(classifyLanding('wrigley', { spray: -20, r: fenceDistance('wrigley', -20) + 20, y: 20 }), null, 'in the bleachers');
+  assert.equal(classifyLanding('rate', { spray: -30, r: fenceDistance('rate', -30) + Rp.stands.depth + 10, y: Rp.street.h }), 'concourse');
+  assert.equal(classifyLanding('rate', { spray: -30, r: fenceDistance('rate', -30) + Rp.stands.depth + Rp.street.width + 10, y: 0 }), 'out_of_park');
+  // a real flight out of each park
+  const out = (park, sprays) => { for (const sp of sprays) for (let ev = 110; ev <= 124; ev += 0.5) for (const la of [26, 30, 34]) { const b = battedBall(park, { exitVelo: ev, launch: la, spray: sp, conditions: { wind: { mph: 10, dir: sp } }, from: FROM }); if (b.outOfPark) return b; } return null; };
+  const w = out('wrigley', [-40, 35, -12]); assert.ok(w && w.kind === 'homer' && W.outOfPark.includes(w.bonus), 'can leave Wrigley');
+  const r = out('rate', [-44, -32, 32, 44]); assert.ok(r && r.bonus === 'out_of_park', 'can leave Rate Field');
+  const rw = Math.hypot(r.flight.rest[0], r.flight.rest[2]); near(r.flight.rest[1], 0, 0.5, 'lands outside, at ground level');
+  assert.ok(rw > fenceDistance('rate', r.flight.restSpray) + Rp.stands.depth + Rp.street.width);
+  // resolveSwing reports it
+  let found = null;
+  for (let seed = 1; seed < 300 && !found; seed++) {
+    const R = createRound({ charId: 'rocco', parkId: 'wrigley', seed, conditions: { wind: { mph: 16, dir: 0 } } }); const p = R.nextPitch();
+    const s = R.resolveSwing(p, { tapT: perfectTap(p, 1), aim: idealAim('rocco', p.plateLoc[0], p.type), batSpeed: 1, uppercut: idealUppercut('rocco', p.plateLoc[1]) });
+    if (s.outOfPark) found = [R, s];
+  }
+  assert.ok(found, 'a max-effort pull with the wind blowing out can leave Wrigley');
+  const [R, s] = found; assert.ok(W.outOfPark.includes(s.bonus) && s.kind === 'homer');
+  const a = R.apply(s); assert.ok(a.events.includes('outOfPark') && a.events.includes('homer'));
+});
+
+test('v2 round events: "wave" when the streak reaches 3, 6, 9 (not 1, 2, 4, 5, 7); streak resets', () => {
+  const R = createRound({ charId: 'jett', seed: 1, personalBest: 1000 });
+  const waves = [];
+  for (let k = 1; k <= 10; k++) { const a = R.apply(homerResult(400)); if (a.events.includes('wave')) waves.push(k); assert.ok(a.events.includes('homer')); }
+  assert.deepEqual(waves, [3, 6, 9]);
+  const o = R.apply(outResult()); assert.ok(o.events.includes('streakEnd') && !o.events.includes('wave'));
+  assert.ok(!R.apply(homerResult(400)).events.includes('wave') && !R.apply(homerResult(400)).events.includes('wave') && R.apply(homerResult(400)).events.includes('wave'), 'three more → wave again');
+  assert.deepEqual(R.apply(R.resolveTake({ n: 99, plateLoc: [3, 3], inZone: false })).events, [], 'a ball → no events');
+});
+
+test('v2 limits: every homer ≤ TUNING.maxHomerFt ≤ 620 (any EV, launch, wind, weather); score bounds for the leaderboard Worker', () => {
+  let maxD = 0;
+  for (const park of ['wrigley', 'rate']) for (const la of [22, 25, 28, 31, 34]) for (const sp of [-30, 0, 30]) for (const w of ['heat', 'clear']) {
+    const b = battedBall(park, { exitVelo: SIM_K.evCap, launch: la, spray: sp, conditions: { weather: w, wind: { mph: 20 * PARKS[park].windScale / PARKS[park].windScale, dir: sp } }, from: FROM, samples: false });
+    if (b.kind === 'homer') maxD = Math.max(maxD, b.distance);
+  }
+  assert.ok(maxD <= TUNING.maxHomerFt && TUNING.maxHomerFt <= 620, `max homer ${maxD} ft`);
+  assert.equal(createRound({ seed: 1 }).apply(homerResult(700)).callouts[0].text, `${TUNING.maxHomerFt} FT`, 'apply() caps the distance too');
+  // the most a single homer can score: max distance × streak × clutch + biggest bonus + WAY OUT + NEW RECORD
+  const bonusMax = Math.max(...Object.values(PARKS).flatMap(P => Object.values(P.bonus).map(b => b.points)));
+  const perHr = TUNING.maxHomerFt * TUNING.streakMult[TUNING.streakMult.length - 1] * TUNING.clutchMult + bonusMax + TUNING.wayOutPts + TUNING.recordPts;
+  const R = createRound({ charId: 'rocco', parkId: 'wrigley', seed: 1, personalBest: 0 });
+  for (let k = 0; k < OUTS_PER_ROUND - 1; k++) R.apply(outResult());
+  let d = 600, last = null; for (let k = 0; k < 8; k++) last = R.apply(homerResult(d += 1, { bonus: 'over_cf' }));
+  assert.ok(last.scoreDelta <= perHr + 1, `single homer ${last.scoreDelta} ≤ ${perHr}`);
+  assert.ok(R.score <= Math.ceil(perHr) * R.homers + 200, 'round score ≤ homers × PER_HR + 200');
+  SIM_SELFTEST.limits = { perHomerMax: Math.ceil(perHr), maxHomerFt: TUNING.maxHomerFt };
 });
 
 // ----------------------------------------------------------------------------

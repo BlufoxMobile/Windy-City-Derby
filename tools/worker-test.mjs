@@ -177,9 +177,9 @@ async function runTests() {
     await good({ district: '', name: 'No District' }, 'empty district'); await good({ district: 'big south', name: 'Lower Case' }, 'district case-insensitive');
     await bad({ district: 'Gold Coast' }, 'unknown district');
     await bad({ score: 12.5 }, 'non-integer score'); await bad({ score: -1 }, 'negative score'); await bad({ score: '4200' }, 'string score');
-    await bad({ score: 60001, homers: 60, longest: 500 }, 'score > 60000'); await good({ score: 60000, homers: 60, longest: 500, bestStreak: 20, name: 'Max Score' }, 'score 60000');
-    await bad({ homers: 61 }, 'homers 61'); await bad({ longest: 621 }, 'longest 621'); await good({ longest: 620, name: 'Max Long' }, 'longest 620');
-    await bad({ score: 6 * 3200 + 201 }, 'implausible score (> homers*3200+200)'); await good({ score: 6 * 3200 + 200, name: 'Edge Score' }, 'score == homers*3200+200');
+    await bad({ score: 250001, homers: 100, longest: 500 }, 'score > 250000'); await good({ score: 250000, homers: 100, longest: 500, bestStreak: 20, name: 'Max Score' }, 'score 250000');
+    await bad({ homers: 101 }, 'homers 101'); await bad({ longest: 621 }, 'longest 621'); await good({ longest: 620, name: 'Max Long' }, 'longest 620');
+    await bad({ score: 6 * 5300 + 201 }, 'implausible score (> homers*5300+200)'); await good({ score: 6 * 5300 + 200, name: 'Edge Score' }, 'score == homers*5300+200');
     await bad({ homers: 0, longest: 400, score: 0, bestStreak: 0 }, 'longest>0 with 0 homers'); await bad({ homers: 2, longest: 0, score: 800 }, 'homers>0 with longest 0');
     await good({ homers: 0, longest: 0, score: 0, bestStreak: 0, name: 'Zero Round' }, 'zero round');
     await bad({ score: 201, homers: 0, longest: 0, bestStreak: 0 }, 'score 201 with 0 homers');

@@ -1,15 +1,22 @@
 // ============================================================================
 // WINDY CITY DERBY — FX. Pooled GPU particles, glowing ribbons (Statcast tracer,
 // pitch trails, swing swooshes), fireworks, confetti, shock rings.
-// Owner: ACTORS. Only depends on the THREE instance passed in.
+// Owner: CINEMA (v2; v1 by ACTORS). Only depends on the THREE instance passed in.
 //
 //   const fx = createFX(THREE, scene, { quality })
 //   fx.burst(kind, pos, opts)      kinds: 'sparks' 'flash' 'flare' 'shock' 'dust'
 //                                  'puff' 'debris' 'splinters' 'glitter' 'confetti'
 //                                  'turf' 'embers' 'ring' (oriented shock ring)
+//                                  'shards' (glass) 'chips' (tile/brick/asphalt) 'streamers'
+//   fx.batCrack(pos, { batSpeed, quality, dir, sweet, contact })   v2: the whole contact moment
+//                                  (flash + flare + sonic ring + sparks + glitter), scaled by bat speed
+//   fx.impact(pos, { surface, dir, scale, color })   v2: out-of-park landings —
+//                                  surface: 'street'|'glass'|'window'|'tile'|'roof'|'car'|'seats'|'grass'|'board'
 //   fx.tracer(path, color, opts) → handle { setHead(t), setTail(t), setOpacity(a),
 //                                  fade(sec), setColor(c), setWidth(ft), release() }
-//   fx.fireworks(pos, n, opts)     n shells launched from pos
+//                                  v2 opts: color2 (tail colour), shimmer 0..1 (energy flow), grad 0..1
+//   fx.fireworks(pos, n, opts)     n shells launched from pos; v2 opts.kinds: ['peony','chrys',
+//                                  'willow','crossette','ring','strobe'] (random mix by default)
 //   fx.update(dt)  fx.clear()  fx.dispose()
 //
 // Near-zero allocation per frame: SoA typed arrays, swap-remove, preallocated
@@ -58,6 +65,15 @@ void main() {
     // anamorphic flare: long horizontal streak
     len = size * max(iPar.y, 1.0);
     size = size * 0.18;
+  } else if (shape > 6.5 && shape < 7.5) {
+    // streamer: long fluttering ribbon strip
+    float r = iPar.w;
+    float cr = cos(r), sr = sin(r);
+    ax = vec2(cr, sr); ay = vec2(-sr, cr);
+    float fl = cos(r * 2.1 + iPar.y);
+    c.x *= 0.22 + 0.2 * abs(fl);
+    c.y *= 2.6;
+    vShade = 0.6 + 0.4 * abs(fl);
   }
   mv.xy += ax * c.x * len + ay * c.y * size;
   gl_Position = projectionMatrix * mv;
@@ -92,6 +108,9 @@ void main() {
     col *= 1.0 + exp(-r * r * 30.0);
   } else if (vShape < 5.5) {              // anamorphic flare
     a = exp(-abs(p.y) * 3.0) * pow(max(1.0 - abs(p.x), 0.0), 2.0);
+  } else if (vShape > 6.5) {              // streamer (solid strip, shaded by flutter)
+    a = step(abs(p.x), 1.0) * step(abs(p.y), 1.0);
+    col *= vShade;
   } else {                                // camera-facing shock ring
     float d = (r - 0.82) / 0.07;
     a = exp(-d * d) + 0.25 * exp(-((r - 0.7) / 0.18) * ((r - 0.7) / 0.18));
@@ -140,6 +159,10 @@ void main() {
 
 const RIB_FS = /* glsl */`
 uniform vec3 uColor;
+uniform vec3 uColor2;
+uniform float uGrad;
+uniform float uShimmer;
+uniform float uTime;
 uniform float uHead;
 uniform float uTail;
 uniform float uTailSoft;
@@ -157,7 +180,10 @@ void main() {
   float core = exp(-d2 * 70.0);
   float along = smoothstep(uTail, uTail + uTailSoft, vT);
   float hg = exp(-(uHead - vT) * uHeadK);
-  vec3 col = uColor * uGain * (glow * (0.55 + 1.1 * hg)) + vec3(1.0) * core * uCore * uGain * (0.5 + 1.2 * hg);
+  float g = clamp((uHead - vT) * 0.45, 0.0, 1.0) * uGrad;
+  vec3 base = mix(uColor, uColor2, g);
+  float sh = 1.0 + uShimmer * 0.35 * sin((vT * 9.0 - uTime * 7.0)) * (1.0 - hg);
+  vec3 col = base * uGain * sh * (glow * (0.55 + 1.1 * hg)) + vec3(1.0) * core * uCore * uGain * (0.5 + 1.2 * hg);
   float a = clamp(glow * 0.75 + core, 0.0, 1.0) * along * uOpacity * vFade;
   if (a < 0.002) discard;
   gl_FragColor = vec4(col, a);
@@ -251,7 +277,7 @@ function makePool(THREE, parent, max, additive, renderOrder) {
       P[j3] = S.x[i]; P[j3 + 1] = S.y[i]; P[j3 + 2] = S.z[i];
       V[j3] = S.vx[i]; V[j3 + 1] = S.vy[i]; V[j3 + 2] = S.vz[i];
       C[j4] = S.r0[i] + (S.r1[i] - S.r0[i]) * k; C[j4 + 1] = S.g0[i] + (S.g1[i] - S.g0[i]) * k; C[j4 + 2] = S.b0[i] + (S.b1[i] - S.b0[i]) * k; C[j4 + 3] = a;
-      R[j4] = size; R[j4 + 1] = S.shape[i] === 3 ? S.seed[i] : S.str[i]; R[j4 + 2] = S.shape[i]; R[j4 + 3] = S.rot[i];
+      R[j4] = size; R[j4 + 1] = S.shape[i] === 3 || S.shape[i] === 7 ? S.seed[i] : S.str[i]; R[j4 + 2] = S.shape[i]; R[j4 + 3] = S.rot[i];
     }
     geo.instanceCount = n;
     if (n > 0) {
@@ -279,6 +305,7 @@ function makeRibbon(THREE, parent, cap) {
     uViewport: { value: new THREE.Vector2(390, 844) }, uWidth: { value: 1.2 }, uMinPx: { value: 3 }, uMaxPx: { value: 1e4 },
     uColor: { value: new THREE.Color(1, 1, 1) }, uHead: { value: 0 }, uTail: { value: -1 }, uTailSoft: { value: 0.12 },
     uOpacity: { value: 1 }, uHeadK: { value: 3 }, uCore: { value: 1 }, uGain: { value: 1 },
+    uColor2: { value: new THREE.Color(1, 1, 1) }, uGrad: { value: 0 }, uShimmer: { value: 0 }, uTime: { value: 0 },
   };
   const mat = new THREE.ShaderMaterial({ uniforms, vertexShader: RIB_VS, fragmentShader: RIB_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
   const mesh = new THREE.Mesh(geo, mat);
@@ -350,6 +377,8 @@ export function createFX(THREE, scene, opts = {}) {
   const tv = new THREE.Vector3(), tu = new THREE.Vector3(), tw = new THREE.Vector3();
   const rnd = Math.random;
   const col = (c, out) => (c == null ? out.set(1, 1, 1) : c.isColor ? out.copy(c) : out.set(c));
+  const clamp01 = v => Math.max(0, Math.min(1, +v || 0));
+  const LQ = quality === 'low' ? 0.5 : quality === 'medium' ? 0.8 : 1;
 
   // oriented shock rings (bat crack sonic ring, landing ripples)
   const ringGeo = new THREE.PlaneGeometry(2, 2);
@@ -392,6 +421,7 @@ export function createFX(THREE, scene, opts = {}) {
     U.uWidth.value = o.width ?? 1.3; r.mesh.userData.minPx = o.minPx ?? 3.2; r.mesh.userData.maxPx = o.maxPx ?? 1e4;
     U.uHead.value = o.head ?? 0; U.uTail.value = o.tail ?? -1; U.uTailSoft.value = o.tailSoft ?? 0.25;
     U.uOpacity.value = o.opacity ?? 1; U.uHeadK.value = o.headK ?? 2.2; U.uCore.value = o.core ?? 1; U.uGain.value = o.gain ?? 1;
+    col(o.color2 ?? color, U.uColor2.value); U.uGrad.value = o.grad ?? (o.color2 ? 1 : 0); U.uShimmer.value = o.shimmer ?? 0;
     const n = pts ? r.setPath(pts, o.count) : 0;
     const h = {
       ribbon: r, mesh: r.mesh, points: n,
@@ -401,7 +431,8 @@ export function createFX(THREE, scene, opts = {}) {
       setOpacity(a) { U.uOpacity.value = a; r.fadeRate = 0; r.mesh.visible = a > 0.001 && h.points > 1; return h; },
       get opacity() { return U.uOpacity.value; },
       fade(sec = 0.4, release = false) { r.fadeRate = U.uOpacity.value / Math.max(0.01, sec); r.autoRelease = release; if (r.fadeRate <= 0 && release) h.release(); return h; },
-      setColor(c) { col(c, U.uColor.value); return h; },
+      setColor(c, c2) { col(c, U.uColor.value); if (c2 != null) { col(c2, U.uColor2.value); U.uGrad.value = 1; } return h; },
+      setShimmer(v) { U.uShimmer.value = v; return h; },
       setWidth(w, minPx) { U.uWidth.value = w; if (minPx != null) r.mesh.userData.minPx = minPx; return h; },
       release() { r.inUse = false; r.mesh.visible = false; r.fadeRate = 0; },
     };
@@ -515,17 +546,109 @@ export function createFX(THREE, scene, opts = {}) {
         }
         break;
       }
+      case 'shards': { // glass: bright glints + tumbling pale-blue shards with gravity
+        const n = Math.round((o.count ?? 26) * LQ); col(o.color ?? '#dff4ff', C0); C1.copy(C0).multiplyScalar(0.7);
+        for (let i = 0; i < n; i++) {
+          coneDir(tv, d.x, d.y, d.z, o.spread ?? 1.2); const sp = (o.speed ?? 26) * (0.3 + rnd()) * k;
+          const j = solid.spawn(x, y, z, tv.x * sp, tv.y * sp + 6, tv.z * sp, 0.8 + rnd() * 0.7, (o.size ?? 0.34) * k * (0.5 + rnd()), (o.size ?? 0.34) * k * 0.6, C0, C1, 0.85, 0.6, 30, 0, 3);
+          solid.S.rotv[j] = (rnd() - 0.5) * 36; solid.S.rot[j] = rnd() * 6.28; solid.S.fout[j] = 0.3;
+        }
+        for (let i = 0; i < Math.round(n * 0.8); i++) {
+          randDir(tv); const sp = (o.speed ?? 26) * 0.6 * (0.2 + rnd()) * k;
+          const j = glow.spawn(x, y, z, tv.x * sp, Math.abs(tv.y) * sp + 4, tv.z * sp, 0.5 + rnd() * 0.6, 0.5 * k, 0.12 * k, CW, C0, 1, 1.2, 26, 0, 4);
+          glow.S.flick[j] = 0.9;
+        }
+        break;
+      }
+      case 'chips': { // tile / brick / asphalt chips + a little grit
+        const n = Math.round((o.count ?? 18) * LQ); col(o.color ?? '#8a4a32', C0); col(o.color2 ?? o.color ?? '#6b3a28', C1);
+        for (let i = 0; i < n; i++) {
+          coneDir(tv, d.x, d.y, d.z, o.spread ?? 1.0); const sp = (o.speed ?? 20) * (0.3 + rnd()) * k;
+          const j = solid.spawn(x, y, z, tv.x * sp, tv.y * sp + 7, tv.z * sp, 0.7 + rnd() * 0.6, (o.size ?? 0.3) * k * (0.6 + rnd() * 0.8), (o.size ?? 0.3) * k, (i & 1) ? C0 : C1, C1, 1, 0.7, 32, 0, 3);
+          solid.S.rotv[j] = (rnd() - 0.5) * 30;
+        }
+        break;
+      }
+      case 'streamers': {
+        const n = Math.round((o.count ?? 40) * LQ);
+        const pal = o.palette || ['#ffcf3a', '#2f80ff', '#ffffff', '#ff4b6e', '#35d0ff'];
+        for (let i = 0; i < n; i++) {
+          col(pal[i % pal.length], C0); randDir(tv);
+          const sp = (o.speed ?? 14) * (0.3 + rnd()) * k;
+          const j = solid.spawn(x + tv.x * (o.radius ?? 3), y + tv.y * (o.radius ?? 3), z + tv.z * (o.radius ?? 3), tv.x * sp, Math.abs(tv.y) * sp + (o.lift ?? 12), tv.z * sp,
+            (o.life ?? 3.6) * (0.7 + rnd() * 0.5), (o.size ?? 0.8) * k, (o.size ?? 0.8) * k, C0, C0, 1, 2.6, 5, 0, 7);
+          solid.S.rotv[j] = (rnd() - 0.5) * 6; solid.S.rot[j] = rnd() * 6.28; solid.S.fout[j] = 0.2;
+        }
+        break;
+      }
       default: break;
     }
   }
 
+  // ---------------------------------------------------------------- v2: bat crack (the contact moment)
+  /**
+   * batSpeed 0..1 (swing effort), quality 0..1 (contact), dir = launch direction, sweet = barrel.
+   * Everything scales with bat speed: flash size, sonic ring, spark count/velocity, flare streak.
+   */
+  function batCrack(pos, o = {}) {
+    const bs = clamp01(o.batSpeed ?? 0.72), q = clamp01(o.quality ?? 0.7);
+    const sweet = o.sweet ?? (o.contact === 'sweet' || q > 0.85);
+    const e = (0.35 + 0.65 * bs) * (0.3 + 0.7 * q);                 // energy 0..1
+    const dirv = o.dir || [0, 0.4, -1];
+    burst('flash', pos, { size: 0.5 + e * e * 2.8, life: sweet ? 0.2 : 0.12, color: sweet ? '#fff1c8' : '#ffffff', opacity: 0.45 + 0.55 * e });
+    if (e > 0.45) burst('flare', pos, { size: 2 + e * 4, life: 0.18 + 0.1 * e, color: sweet ? '#ffd9a0' : '#cfe8ff', aspect: 7 + 5 * bs, opacity: 0.4 + 0.5 * e });
+    if (e > 0.3) burst('shock', pos, { r0: 0.3, r1: 1.2 + e * (sweet ? 5 : 2.6), life: sweet ? 0.28 : 0.2, opacity: sweet ? 0.85 : 0.45 });
+    burst('sparks', pos, { dir: dirv, count: Math.round((4 + e * e * (sweet ? 64 : 34)) * LQ), speed: 25 + e * 75, spread: sweet ? 0.7 : 1.0, color: sweet ? '#fff0b0' : '#ffe0a0', color2: sweet ? '#ff6a1a' : '#ff9a4a', life: 0.2 + 0.28 * e });
+    if (sweet) {
+      tu.set(dirv[0] ?? dirv.x, dirv[1] ?? dirv.y, dirv[2] ?? dirv.z).normalize();
+      ring([pos[0] ?? pos.x, pos[1] ?? pos.y, pos[2] ?? pos.z].map((v, i) => v + [tu.x, tu.y, tu.z][i] * 1.2), tu, { r0: 0.3, r1: 3 + 4 * bs, life: 0.32, color: '#ffe2b0', opacity: 0.9, thick: 0.1 });
+      if (bs > 0.6) ring([pos[0] ?? pos.x, pos[1] ?? pos.y, pos[2] ?? pos.z], tu, { r0: 0.2, r1: 7 + 5 * bs, life: 0.45, color: '#ffffff', opacity: 0.5, thick: 0.06, delay: 0.03 });
+      burst('glitter', pos, { count: Math.round(10 + 16 * bs), speed: 10 + 8 * bs, life: 0.6, size: 0.45, color: '#fff2c0' });
+    } else if (q < 0.45) burst('puff', pos, { count: 5, size: 0.3, speed: 2.5, life: 0.4, color: '#efe6d4', opacity: 0.35, lift: 0.3 });
+    if (o.contact === 'jammed' || o.contact === 'off the end') burst('splinters', pos, { dir: dirv, count: 10, speed: 18 });
+    return e;
+  }
+
+  // ---------------------------------------------------------------- v2: out-of-park impacts
+  const SURF = {
+    street: { dust: '#9c978e', chips: '#3a3a3c', chips2: '#5b5a57' },
+    grass: { dust: '#7d8a5a', chips: '#3f5f22', chips2: '#6b4e2e' },
+    tile: { dust: '#c4a58c', chips: '#a0482e', chips2: '#6e3322' },
+    roof: { dust: '#b9b2a4', chips: '#4a4640', chips2: '#7a3b2a' },
+    seats: { dust: '#c8c3b8', chips: '#1d4a33', chips2: '#2e5a43' },
+    board: { dust: '#9aa8c0', chips: '#101216', chips2: '#2a2f38' },
+  };
+  function impact(pos, o = {}) {
+    const surf = o.surface || 'street', k = o.scale ?? 1;
+    const P0 = [pos[0] ?? pos.x, pos[1] ?? pos.y, pos[2] ?? pos.z];
+    const dirv = o.dir || [0, 1, 0];
+    if (surf === 'glass' || surf === 'window' || surf === 'car') {
+      burst('flash', P0, { size: 3 * k, life: 0.14, color: '#e8f6ff', opacity: 0.9 });
+      burst('shards', P0, { dir: dirv, count: 30, speed: 24, scale: k });
+      burst('shock', P0, { r0: 0.5, r1: 7 * k, life: 0.3, opacity: 0.6, color: '#dff4ff' });
+      if (surf === 'car') burst('sparks', P0, { dir: [0, 1, 0], count: 16, speed: 30, life: 0.3 });
+      burst('dust', P0, { count: 6, size: 1.2 * k, speed: 4, life: 0.9, color: '#c8ccd0', opacity: 0.3, lift: 1.5 });
+      return;
+    }
+    const c = SURF[surf] || SURF.street;
+    burst('dust', P0, { count: 14, size: 1.6 * k, speed: 7, life: 1.4, color: c.dust, opacity: 0.5, lift: 2.2 });
+    burst('chips', P0, { dir: [dirv[0] ?? 0, 1, dirv[2] ?? 0], count: surf === 'grass' ? 8 : 16, speed: 18 * k, color: c.chips, color2: c.chips2, size: 0.3 * k });
+    if (surf === 'street' || surf === 'roof' || surf === 'board') burst('sparks', P0, { dir: [0, 1, 0], count: 10, speed: 22, spread: 1.3, life: 0.25, color: '#fff2d0', color2: '#ff8a3a' });
+    burst('shock', P0, { r0: 1, r1: 9 * k, life: 0.35, opacity: 0.35, color: o.color ?? '#ffffff' });
+    ring([P0[0], P0[1] + 0.3, P0[2]], [0, 1, 0], { r0: 1, r1: 11 * k, life: 0.6, color: o.color ?? '#ffe0a0', opacity: 0.35, thick: 0.06 });
+  }
+
   // ---------------------------------------------------------------- fireworks
   const SHELL_PAL = ['#ffcf3a', '#ff4b3a', '#3aa8ff', '#ffffff', '#7cff6b', '#ff5fd2', '#b46bff', '#35d0ff'];
+  const KINDS = ['peony', 'chrys', 'willow', 'crossette', 'ring', 'strobe'];
   const shells = [];
-  for (let i = 0; i < 24; i++) shells.push({ on: false, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, t: 0, fuse: 1, c: new THREE.Color(), c2: new THREE.Color(), size: 1, kind: 0, trailAcc: 0, delay: 0 });
+  for (let i = 0; i < 28; i++) shells.push({ on: false, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, t: 0, fuse: 1, c: new THREE.Color(), c2: new THREE.Color(), size: 1, kind: 'peony', trailAcc: 0, delay: 0 });
+  const splits = [];   // crossette stars waiting to split
+  for (let i = 0; i < 64; i++) splits.push({ on: false, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, t: 0, at: 0.5, c: new THREE.Color(), size: 1 });
   function fireworks(pos, n = 5, o = {}) {
     const x = pos[0] ?? pos.x, y = pos[1] ?? pos.y, z = pos[2] ?? pos.z;
     const pal = o.palette || SHELL_PAL;
+    const kinds = o.kinds || KINDS;
     for (let i = 0; i < n; i++) {
       const s = shells.find(q => !q.on); if (!s) break;
       s.on = true; s.t = 0; s.delay = (o.stagger ?? 0.22) * i + rnd() * 0.12;
@@ -534,25 +657,54 @@ export function createFX(THREE, scene, opts = {}) {
       s.vy = Math.sqrt(2 * 32 * h); s.vx = (rnd() - 0.5) * 20; s.vz = (rnd() - 0.5) * 20;
       s.fuse = s.vy / 32 * (0.92 + rnd() * 0.1);
       s.c.set(pal[Math.floor(rnd() * pal.length)]); s.c2.set(pal[Math.floor(rnd() * pal.length)]);
-      s.size = (o.size ?? 1) * (0.8 + rnd() * 0.5); s.kind = Math.floor(rnd() * 3); s.trailAcc = 0;
+      s.size = (o.size ?? 1) * (0.8 + rnd() * 0.5); s.kind = kinds[Math.floor(rnd() * kinds.length)]; s.trailAcc = 0;
+      if (s.kind === 'willow') { s.c.set('#ffcf6a'); s.c2.set('#ff9d2a'); }
     }
   }
   function explode(s) {
-    const n = Math.round((quality === 'low' ? 45 : 90) * s.size);
-    const sp0 = 62 * s.size;
+    const LQn = quality === 'low' ? 0.5 : 1;
+    const sp0 = 62 * s.size, kind = s.kind;
+    col('#fff6e0', C0);
+    glow.spawn(s.x, s.y, s.z, 0, 0, 0, 0.35, 30 * s.size, 70 * s.size, C0, s.c, 0.9, 0, 0, 0, 0);   // burst flash
+    if (kind === 'ring') {
+      const n = Math.round(60 * LQn * s.size); randDir(tu); tw.set(0, 1, 0).cross(tu).normalize(); tv.crossVectors(tu, tw);
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * 6.283, cx = Math.cos(a), cy = Math.sin(a);
+        const dx = tw.x * cx + tv.x * cy, dy = tw.y * cx + tv.y * cy, dz = tw.z * cx + tv.z * cy;
+        C1.copy(s.c).multiplyScalar(0.3);
+        const j = glow.spawn(s.x, s.y, s.z, dx * sp0, dy * sp0, dz * sp0, 1.4 + rnd() * 0.4, 2.2 * s.size, 1.2 * s.size, s.c, C1, 1, 1.3, 14, 0.06, 1);
+        glow.S.fout[j] = 0.5;
+      }
+      return;
+    }
+    if (kind === 'crossette') {
+      for (let i = 0; i < 10; i++) {
+        const q = splits.find(z => !z.on); if (!q) break;
+        randDir(tv); q.on = true; q.t = 0; q.at = 0.45 + rnd() * 0.2; q.x = s.x; q.y = s.y; q.z = s.z;
+        q.vx = tv.x * sp0 * 0.55; q.vy = tv.y * sp0 * 0.55; q.vz = tv.z * sp0 * 0.55; q.c.copy(s.c); q.size = s.size;
+      }
+      return;
+    }
+    const n = Math.round((kind === 'willow' ? 70 : kind === 'strobe' ? 60 : 90) * LQn * s.size);
     for (let i = 0; i < n; i++) {
       randDir(tv);
-      const sp = s.kind === 1 ? sp0 : sp0 * (0.55 + rnd() * 0.45);
+      const sp = kind === 'peony' ? sp0 * (0.85 + rnd() * 0.15) : sp0 * (0.55 + rnd() * 0.45);
       const c = (i & 1) ? s.c : s.c2;
-      C1.copy(c).multiplyScalar(0.35);
-      const j = glow.spawn(s.x, s.y, s.z, tv.x * sp + s.vx * 0.3, tv.y * sp + s.vy * 0.2, tv.z * sp + s.vz * 0.3, 1.5 + rnd() * 0.9, 2.2 * s.size, 1.3 * s.size, c, C1, 1, 1.25, 16, 0.07, 1);
-      glow.S.fout[j] = 0.5;
-      if (s.kind === 2) glow.S.flick[j] = 0.6;
+      if (kind === 'willow') {       // long hanging gold trails
+        C1.set('#7a3a08');
+        const j = glow.spawn(s.x, s.y, s.z, tv.x * sp * 0.7, tv.y * sp * 0.7 + 8, tv.z * sp * 0.7, 2.8 + rnd() * 1.2, 1.8 * s.size, 0.9 * s.size, c, C1, 1, 2.6, 7, 0.16, 1);
+        glow.S.fout[j] = 0.65; glow.S.flick[j] = 0.25;
+      } else if (kind === 'strobe') {
+        const j = glow.spawn(s.x, s.y, s.z, tv.x * sp, tv.y * sp, tv.z * sp, 1.8 + rnd() * 0.8, 2.0 * s.size, 1.4 * s.size, CW, c, 1, 1.5, 12, 0, 4);
+        glow.S.flick[j] = 1;
+      } else {
+        C1.copy(c).multiplyScalar(0.35);
+        const j = glow.spawn(s.x, s.y, s.z, tv.x * sp + s.vx * 0.3, tv.y * sp + s.vy * 0.2, tv.z * sp + s.vz * 0.3, 1.5 + rnd() * 0.9, 2.2 * s.size, 1.3 * s.size, c, C1, 1, 1.25, 16, kind === 'chrys' ? 0.14 : 0.07, 1);
+        glow.S.fout[j] = 0.5;
+      }
     }
-    col('#fff6e0', C0);
-    glow.spawn(s.x, s.y, s.z, 0, 0, 0, 0.35, 30 * s.size, 70 * s.size, C0, s.c, 0.9, 0, 0, 0, 0);
-    if (s.kind === 0) { // crackle glitter after the break
-      for (let i = 0; i < 26; i++) {
+    if (kind === 'chrys' || kind === 'peony') { // crackle glitter after the break
+      for (let i = 0; i < 26 * LQn; i++) {
         randDir(tv); const sp = sp0 * 0.5 * rnd();
         const j = glow.spawn(s.x, s.y, s.z, tv.x * sp, tv.y * sp, tv.z * sp, 1.6 + rnd() * 0.8, 1.6 * s.size, 0.6 * s.size, CW, s.c, 1, 1.4, 10, 0, 4);
         glow.S.flick[j] = 0.9; glow.S.fin[j] = 0.4;
@@ -573,9 +725,27 @@ export function createFX(THREE, scene, opts = {}) {
       }
       if (s.t >= s.fuse) { explode(s); s.on = false; }
     }
+    for (const q of splits) {
+      if (!q.on) continue;
+      q.t += dt; q.vy -= 20 * dt;
+      const dr = Math.exp(-1.2 * dt); q.vx *= dr; q.vy *= dr; q.vz *= dr;
+      q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt;
+      if (rnd() < 0.5) { C1.copy(q.c).multiplyScalar(0.5); glow.spawn(q.x, q.y, q.z, 0, 0, 0, 0.3, 1.4 * q.size, 0.4 * q.size, q.c, C1, 0.8, 0, 0, 0, 0); }
+      if (q.t >= q.at) {
+        q.on = false;
+        for (let k = 0; k < 4; k++) {
+          const a = k * 1.5708 + rnd() * 0.3, sp = 28 * q.size;
+          tv.set(Math.cos(a), (rnd() - 0.3) * 0.6, Math.sin(a)).normalize();
+          C1.copy(q.c).multiplyScalar(0.3);
+          const j = glow.spawn(q.x, q.y, q.z, tv.x * sp, tv.y * sp, tv.z * sp, 0.9 + rnd() * 0.4, 1.8 * q.size, 1 * q.size, CW, q.c, 1, 1.6, 14, 0.08, 1);
+          glow.S.fout[j] = 0.6;
+        }
+      }
+    }
   }
 
   // ---------------------------------------------------------------- update
+  let fxTime = 0;
   function update(dt) {
     dt = Math.min(Math.max(dt || 0, 0), 0.1);
     updateShells(dt);
@@ -591,7 +761,9 @@ export function createFX(THREE, scene, opts = {}) {
       m.scale.setScalar(u.r0 + (u.r1 - u.r0) * e);
       m.material.uniforms.uOpacity.value = u.a0 * (1 - k) * (1 - k);
     }
+    fxTime += dt;
     for (const r of ribbons) {
+      if (r.inUse) r.uniforms.uTime.value = fxTime;
       if (r.fadeRate > 0) {
         const U = r.uniforms; U.uOpacity.value = Math.max(0, U.uOpacity.value - r.fadeRate * dt);
         if (U.uOpacity.value <= 0) { r.fadeRate = 0; r.mesh.visible = false; if (r.autoRelease) { r.autoRelease = false; r.inUse = false; } }
@@ -602,6 +774,7 @@ export function createFX(THREE, scene, opts = {}) {
   function clear() {
     glow.clear(); solid.clear();
     for (const s of shells) s.on = false;
+    for (const q of splits) q.on = false;
     for (const m of rings) { m.userData.active = false; m.visible = false; }
     for (const r of ribbons) { r.mesh.visible = false; r.fadeRate = 0; r.inUse = false; }
   }
@@ -615,7 +788,7 @@ export function createFX(THREE, scene, opts = {}) {
   }
 
   return {
-    burst, tracer, fireworks, update, clear, dispose, ring, root,
+    burst, tracer, fireworks, update, clear, dispose, ring, root, batCrack, impact,
     get counts() { return { glow: glow.count, solid: solid.count, ribbons: ribbons.filter(r => r.inUse).length }; },
   };
 }

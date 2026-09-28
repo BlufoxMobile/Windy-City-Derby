@@ -1,0 +1,121 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Wrigley harness</title>
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}</script>
+<style>
+html,body{margin:0;height:100%;background:#000;overflow:hidden}
+#gl{position:fixed;inset:0;width:100%;height:100%;display:block}
+#hud{position:fixed;left:6px;top:6px;font:11px/1.3 ui-monospace,Menlo,monospace;color:#fff;background:rgba(0,0,0,.45);padding:4px 6px;border-radius:4px;white-space:pre;pointer-events:none;display:none}
+</style></head><body><canvas id="gl"></canvas><div id="hud"></div>
+<script type="module">
+// Harness for src/parks/wrigley.js (WRIGLEY agent).
+// ?tod=day|dusk|night &weather=clear|overcast|heat|drizzle &q=high|medium|low &bats=R|L
+// &cam=batting|cf|booth|boothwide|high|street|sheffield|rooftop|lf|rf|board|scoreboard|wall|basket|gs|title|kenmore
+// &noassets=1 &t=0.5 &cel=1 &oop=1 &spray=-20 &wave=1 &hud=1 &live=1 &render=0 (skip render.js, plain WebGLRenderer)
+import * as THREE from 'three';
+import { createRenderer } from '/src/render.js';
+import { buildWrigleyStadium } from '/src/parks/wrigley.js';
+
+const P = new URLSearchParams(location.search);
+const tod = P.get('tod') || 'day', weather = P.get('weather') || 'clear';
+const camName = P.get('cam') || 'batting', q = P.get('q') || 'high';
+const wind = { mph: +(P.get('mph') ?? 12), dir: +(P.get('dir') ?? 20) };
+const bats = P.get('bats') === 'L' ? 'L' : 'R';
+
+async function loadShim(keys) {
+  const imgs = {}, meta = {};
+  if (P.get('noassets')) return mkAssets(imgs, meta);
+  try {
+    const man = await (await fetch('/assets/manifest.json')).json();
+    let extra = {};
+    try { extra = await (await fetch('/scratch/wrigley/manifest-add.json')).json(); } catch (e) { /* none */ }
+    const all = Object.assign({}, man.images || {}, (extra && extra.images) || {});
+    await Promise.all(keys.map(async k => {
+      const m = all[k]; if (!m) return;
+      const im = new Image(); im.src = '/assets/' + m.src;
+      try { await im.decode(); imgs[k] = im; meta[k] = m; } catch (e) { console.info('asset missing', k); }
+    }));
+  } catch (e) { console.info('manifest failed', e); }
+  return mkAssets(imgs, meta);
+}
+function mkAssets(imgs, meta) {
+  return {
+    get: k => imgs[k] || null, meta: k => meta[k] || null,
+    texture(T, k, o = {}) { const im = imgs[k]; if (!im) return null; const t = new T.Texture(im); t.needsUpdate = true; t.colorSpace = o.srgb === false ? T.NoColorSpace : T.SRGBColorSpace; if (o.repeat) { t.wrapS = t.wrapT = T.RepeatWrapping; t.repeat.set(...o.repeat); } return t; },
+    receipt: { loaded: Object.keys(imgs).length },
+  };
+}
+
+const canvas = document.getElementById('gl');
+const R = createRenderer(canvas, { quality: q, adaptive: false });
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.5, 9000);
+const DEG = Math.PI / 180, clamp = (v, a, b) => Math.max(a, Math.min(b, v)), lerp = (a, b, t) => a + (b - a) * t;
+const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+// --- exact copy of src/camera.js battingPose / fovFor (v2) ---
+function fovFor(a) { const hMin = 30 * DEG; const v = 2 * Math.atan(Math.tan(hMin / 2) / Math.max(a, 0.2)) / DEG; return clamp(Math.max(40, v), 40, 62); }
+function battingPose(aspect) {
+  const sgn = bats === 'L' ? 1 : -1, k = smooth(0.55, 1.7, aspect);
+  return { pos: [sgn * lerp(3.4, 0.9, k), lerp(13.2, 10.2, k), lerp(18, 26, k)], look: [-sgn * lerp(0.9, 1.5, k), lerp(-8, 2.4, k), -60], fov: fovFor(aspect) };
+}
+const portrait = innerWidth < innerHeight;
+const CAMS = {
+  cf: { pos: [0, 58, -420], look: [0, 30, 60], fov: portrait ? 62 : 44 },            // reverse angle from CF (skyline over the 1B roof)
+  cfhigh: { pos: [-40, 120, -520], look: [0, 30, 40], fov: portrait ? 62 : 46 },
+  booth: { pos: [0, 44, 40], look: [0, 50, 92], fov: portrait ? 44 : 32 },           // close shot of the booth windows
+  boothwide: { pos: [30, 28, -40], look: [0, 50, 92], fov: portrait ? 58 : 42 },
+  high: { pos: [320, 360, 260], look: [0, 0, -210], fov: portrait ? 60 : 44 },
+  title: { pos: [-150, 150, 160], look: [0, 30, -250], fov: portrait ? 62 : 44 },
+  street: { pos: [-168, 6, -416], look: [-65, 18, -462], fov: portrait ? 64 : 50 },  // on Waveland, looking along it toward CF
+  sheffield: { pos: [220, 6, -382], look: [119, 18, -443], fov: portrait ? 64 : 50 },
+  hawks: { pos: [-110, 48, -330], look: [-186, 2, -405], fov: portrait ? 60 : 46 },
+  rooftop: { pos: [-100, 34, -440], look: [-190, 47, -472], fov: portrait ? 62 : 48 },
+  roofs: { pos: [-40, 110, -300], look: [-170, 40, -480], fov: portrait ? 62 : 48 },
+  roofsR: { pos: [60, 110, -300], look: [230, 40, -420], fov: portrait ? 62 : 48 },
+  cfwide: { pos: [30, 70, -430], look: [40, 50, 60], fov: portrait ? 62 : 55 },
+  lf: { pos: [-70, 26, -160], look: [-250, 34, -335], fov: portrait ? 60 : 46 },
+  rf: { pos: [70, 26, -160], look: [250, 34, -335], fov: portrait ? 60 : 46 },
+  board: { pos: [0, 30, -220], look: [0, 75, -470], fov: portrait ? 50 : 36 },
+  scoreboard: { pos: [0, 80, -330], look: [0, 90, -470], fov: portrait ? 50 : 38 },
+  wall: { pos: [-60, 8, -300], look: [-150, 7, -345], fov: portrait ? 60 : 46 },
+  basket: { pos: [40, 14, -350], look: [0, 12, -400], fov: portrait ? 60 : 46 },
+  gs: { pos: [-30, 20, -250], look: [120, 50, 30], fov: portrait ? 62 : 48 },
+  kenmore: { pos: [-200, 60, -330], look: [-300, 20, -520], fov: portrait ? 62 : 48 },
+  plate: { pos: [30, 14, 30], look: [-5, 0, -10], fov: portrait ? 60 : 44 },
+};
+function setCam(name) {
+  const aspect = innerWidth / innerHeight;
+  const c = name === 'batting' ? battingPose(aspect) : (CAMS[name] || battingPose(aspect));
+  camera.position.set(...c.pos); camera.lookAt(...c.look);
+  camera.fov = c.fov; camera.aspect = aspect; camera.updateProjectionMatrix();
+}
+setCam(camName);
+R.resize(innerWidth, innerHeight);
+
+const keys = [`sky_wrigley_${tod}`, 'tex_ivy', 'tex_brick', 'tex_crowd_north', ...(P.get('selfload') ? [] : ['wrigley_facades', 'wrigley_facades_win', 'wrigley_ivy', 'wrigley_ivy_n', 'wrigley_ivy_leaves', 'wrigley_juniper'])];
+const t0 = performance.now();
+const assets = await loadShim(keys);
+const tA = performance.now();
+const S = buildWrigleyStadium(THREE, { parkId: 'wrigley', timeOfDay: tod, weather, wind, assets, quality: q, assetBase: '/assets/parks/wrigley/', photos: P.get('noassets') ? false : undefined });
+const tB = performance.now();
+S.attach(scene);
+S.setBoard({ name: P.get('name') || 'NOVA', homers: 7, outs: 3, score: 12450, lastFt: 452, message: P.get('msg') || 'NOW BATTING' });
+S.setCrowd(+(P.get('crowd') ?? 0.4));
+let T = 0;
+function advance(sec = 0, steps = 1) { const dt = sec / Math.max(1, steps); for (let i = 0; i < steps; i++) { T += dt; S.update(dt, T); } render(); return T; }
+function render() { R.render(scene, camera); }
+function stats() {
+  const r = R.renderer; r.info.autoReset = false; r.info.reset(); r.render(scene, camera); const o = { calls: r.info.render.calls, tris: r.info.render.triangles, programs: r.info.programs?.length, geos: r.info.memory.geometries, texs: r.info.memory.textures }; r.info.autoReset = true; render(); return o;
+}
+function timeFrames(n = 5) { const t = performance.now(); for (let i = 0; i < n; i++) { T += 1 / 60; S.update(1 / 60, T); R.render(scene, camera); } R.renderer.getContext().finish(); return (performance.now() - t) / n; }
+if (P.get('cel')) S.celebrate({ spray: +(P.get('spray') ?? -20), distance: 447, bonus: P.get('bonus') || null });
+if (P.get('oop')) { const s = +(P.get('spray') ?? -25), r = +(P.get('r') ?? 445); S.outOfPark({ spray: s, distance: 486, landing: [Math.sin(s * DEG) * r, 0, -Math.cos(s * DEG) * r], bonus: P.get('bonus') || 'street_l' }); }
+if (P.get('wave')) S.wave({ fromSpray: -70, laps: 1.5 });
+advance(+(P.get('t') ?? 0.5), +(P.get('steps') ?? 4));
+window.__h = { THREE, R, S, scene, camera, advance, render, stats, setCam, timeFrames, info: S.info(), build: { assetsMs: Math.round(tA - t0), buildMs: Math.round(tB - tA) } };
+window.__ready = true;
+console.log('[harness] built wrigley', tod, weather, q, JSON.stringify(window.__h.build), JSON.stringify(S.info()));
+if (P.get('hud')) { const h = document.getElementById('hud'); h.style.display = 'block'; h.textContent = `wrigley ${tod} ${weather} ${q}\n` + JSON.stringify(stats()); }
+if (P.get('live')) { let last = performance.now(); const loop = now => { requestAnimationFrame(loop); const dt = Math.min(0.05, (now - last) / 1000); last = now; R.beginFrame(dt); T += dt; S.update(dt, T); render(); }; requestAnimationFrame(loop); }
+addEventListener('resize', () => { setCam(camName); R.resize(innerWidth, innerHeight); render(); });
+</script></body></html>

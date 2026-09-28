@@ -117,7 +117,8 @@
    "heightFt": 7.217,
    "contactFrame": 3,
    "view": "rear-3/4, right-handed, faces +X (screen right)",
-   "bytes": 327714
+   "bytes": 327714,
+   "lazy": true
   },
   "swing_jett": {
    "src": "swing_jett.webp",
@@ -133,7 +134,8 @@
    "heightFt": 6.429,
    "contactFrame": 3,
    "view": "rear-3/4, right-handed, faces +X (screen right)",
-   "bytes": 331482
+   "bytes": 331482,
+   "lazy": true
   },
   "swing_dex": {
    "src": "swing_dex.webp",
@@ -149,7 +151,8 @@
    "heightFt": 6.78,
    "contactFrame": 3,
    "view": "rear-3/4, right-handed, faces +X (screen right)",
-   "bytes": 418172
+   "bytes": 418172,
+   "lazy": true
   },
   "swing_blaze": {
    "src": "swing_blaze.webp",
@@ -165,7 +168,8 @@
    "heightFt": 6.251,
    "contactFrame": 3,
    "view": "rear-3/4, right-handed, faces +X (screen right)",
-   "bytes": 497842
+   "bytes": 497842,
+   "lazy": true
   },
   "swing_nova": {
    "src": "swing_nova.webp",
@@ -181,7 +185,8 @@
    "heightFt": 6.455,
    "contactFrame": 3,
    "view": "rear-3/4, right-handed, faces +X (screen right)",
-   "bytes": 480740
+   "bytes": 480740,
+   "lazy": true
   },
   "swing_skye": {
    "src": "swing_skye.webp",
@@ -197,7 +202,8 @@
    "heightFt": 6.79,
    "contactFrame": 3,
    "view": "rear-3/4, right-handed, faces +X (screen right)",
-   "bytes": 317276
+   "bytes": 317276,
+   "lazy": true
   },
   "pitcher": {
    "src": "pitcher.webp",
@@ -213,7 +219,8 @@
    "heightFt": 6.514,
    "releaseFrame": 3,
    "view": "front, right-handed pitcher (throwing arm on image left)",
-   "bytes": 290648
+   "bytes": 290648,
+   "lazy": true
   },
   "title_portrait": {
    "src": "title_portrait.webp",
@@ -274,6 +281,203 @@
    "w": 1280,
    "h": 724,
    "bytes": 235528
+  },
+  "model_rocco": {
+   "src": "models/rocco.glb",
+   "type": "model",
+   "lazy": true,
+   "bytes": 842560,
+   "heightFt": 6.55,
+   "rig": "meshy-mixamo24"
+  },
+  "model_jett": {
+   "src": "models/jett.glb",
+   "type": "model",
+   "lazy": true,
+   "bytes": 685036,
+   "heightFt": 6.2,
+   "rig": "meshy-mixamo24"
+  },
+  "model_dex": {
+   "src": "models/dex.glb",
+   "type": "model",
+   "lazy": true,
+   "bytes": 793028,
+   "heightFt": 6.25,
+   "rig": "meshy-mixamo24"
+  },
+  "model_blaze": {
+   "src": "models/blaze.glb",
+   "type": "model",
+   "lazy": true,
+   "bytes": 699068,
+   "heightFt": 6.0,
+   "rig": "meshy-mixamo24"
+  },
+  "model_nova": {
+   "src": "models/nova.glb",
+   "type": "model",
+   "lazy": true,
+   "bytes": 927212,
+   "heightFt": 6.0,
+   "rig": "meshy-mixamo24",
+   "tris": 30778
+  },
+  "model_skye": {
+   "src": "models/skye.glb",
+   "type": "model",
+   "lazy": true,
+   "bytes": 813428,
+   "heightFt": 6.0,
+   "rig": "meshy-mixamo24"
+  },
+  "model_pitcher": {
+   "src": "models/pitcher.glb",
+   "type": "model",
+   "lazy": true,
+   "bytes": 656768,
+   "heightFt": 6.25,
+   "rig": "meshy-mixamo24"
+  },
+  "booth_rusty": {
+   "src": "booth/booth_rusty.webp",
+   "w": 2560,
+   "h": 640,
+   "bytes": 296374,
+   "lazy": true,
+   "frames": 5,
+   "note": "Rusty Brushwood strip: 0 lean-in, 1 calling it, 2 pointing, 3 arms up, 4 thumbs-up wink (512x640 each, RGBA)"
+  },
+  "booth_bg_day": {
+   "src": "booth/booth_bg_day.webp",
+   "w": 1600,
+   "h": 904,
+   "bytes": 80734,
+   "lazy": true
+  },
+  "booth_bg_night": {
+   "src": "booth/booth_bg_night.webp",
+   "w": 1600,
+   "h": 904,
+   "bytes": 41398,
+   "lazy": true
+  },
+  "vo_rusty_waveland": {
+   "src": "vo/rusty_waveland.mp3",
+   "type": "audio",
+   "lazy": true,
+   "bytes": 59633
+  },
+  "vo_rusty_sheffield": {
+   "src": "vo/rusty_sheffield.mp3",
+   "type": "audio",
+   "lazy": true,
+   "bytes": 58327
+  },
+  "vo_rusty_rooftop": {
+   "src": "vo/rusty_rooftop.mp3",
+   "type": "audio",
+   "lazy": true,
+   "bytes": 49184
+  },
+  "vo_rusty_scoreboard": {
+   "src": "vo/rusty_scoreboard.mp3",
+   "type": "audio",
+   "lazy": true,
+   "bytes": 56499
+  },
+  "vo_rusty_monster": {
+   "src": "vo/rusty_monster.mp3",
+   "type": "audio",
+   "lazy": true,
+   "bytes": 42915
+  },
+  "vo_rusty_b2b": {
+   "src": "vo/rusty_b2b.mp3",
+   "type": "audio",
+   "lazy": true,
+   "bytes": 42131
+  },
+  "vo_rusty_generic": {
+   "src": "vo/rusty_generic.mp3",
+   "type": "audio",
+   "lazy": true,
+   "bytes": 39519
+  },
+  "vo_pa_out": {
+   "src": "vo/pa_out.mp3",
+   "type": "audio",
+   "lazy": true,
+   "bytes": 60678
+  },
+  "vo_pa_board": {
+   "src": "vo/pa_board.mp3",
+   "type": "audio",
+   "lazy": true,
+   "bytes": 49445
+  },
+  "crowd_atlas": {
+   "src": "crowd/crowd_atlas.webp",
+   "w": 2048,
+   "h": 2048,
+   "bytes": 721986,
+   "cells": {
+    "cols": 16,
+    "rows": 10,
+    "poses": 5,
+    "ids": 32,
+    "waistV": 0.035,
+    "relH": 0.575
+   },
+   "note": "crowd sprite atlas (src/crowd.js): 32 fans x 5 poses, shirts keyed magenta / caps keyed cyan; not GL-flipped (HTMLImageElement is fine)"
+  },
+  "rate_hedge": {
+   "src": "parks/rate/rate_hedge.webp",
+   "w": 512,
+   "h": 512,
+   "bytes": 107334
+  },
+  "rate_precast": {
+   "src": "parks/rate/rate_precast.webp",
+   "w": 512,
+   "h": 512,
+   "bytes": 21766
+  },
+  "wrigley_facades": {
+   "src": "parks/wrigley/facades.webp",
+   "w": 1024,
+   "h": 2304,
+   "bytes": 339234
+  },
+  "wrigley_facades_win": {
+   "src": "parks/wrigley/facades_win.webp",
+   "w": 512,
+   "h": 1152,
+   "bytes": 59180
+  },
+  "wrigley_ivy": {
+   "src": "parks/wrigley/ivy.webp",
+   "w": 1024,
+   "h": 1024,
+   "bytes": 270218
+  },
+  "wrigley_ivy_n": {
+   "src": "parks/wrigley/ivy_n.webp",
+   "w": 512,
+   "h": 512,
+   "bytes": 53454
+  },
+  "wrigley_ivy_leaves": {
+   "src": "parks/wrigley/ivy_leaves.webp",
+   "w": 1024,
+   "h": 1024,
+   "bytes": 254980
+  },
+  "wrigley_juniper": {
+   "src": "parks/wrigley/juniper.webp",
+   "w": 512,
+   "h": 512,
+   "bytes": 96030
   }
  }
 }

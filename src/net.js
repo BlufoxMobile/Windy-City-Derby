@@ -17,7 +17,7 @@ import { CHARACTERS, PARK_IDS, DISTRICTS, VERSION, BOARD_ENDPOINT, chicagoDate }
 const LOCAL_KEY = 'wcd-local-v1';
 const QUEUE_KEY = 'wcd-queue-v1';
 const CHAR_IDS = new Set(CHARACTERS.map(c => c.id));
-const LIMITS = { score: 60000, homers: 60, longest: 620, bestStreak: 60, pitches: 400 };
+const LIMITS = { score: 250000, homers: 100, longest: 620, bestStreak: 100, pitches: 400 };
 const LOCAL_ROWS = 50, HISTORY = 50, QUEUE_MAX = 25, QUEUE_TTL = 7 * 864e5, RECENT_TTL = 5 * 60e3, TOP_TTL = 10e3;
 
 // ---------------------------------------------------------------------------
@@ -99,7 +99,7 @@ function buildPayload(s) {
     charId: CHAR_IDS.has(summary.charId) ? summary.charId : 'nova',
     parkId: PARK_IDS.includes(summary.parkId) ? summary.parkId : 'wrigley',
     mode, date,
-    score: Math.min(int(summary.score, 0, LIMITS.score), homers * 3200 + 200),
+    score: Math.min(int(summary.score, 0, LIMITS.score), homers * 5300 + 200),
     homers, longest,
     bestStreak: Math.min(int(summary.bestStreak, 0, LIMITS.bestStreak), homers),
     pitches: int(summary.pitches != null ? summary.pitches : summary.pitchCount, 0, LIMITS.pitches),

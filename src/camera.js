@@ -1,12 +1,23 @@
 // ============================================================================
 // WINDY CITY DERBY — DIRECTOR. Every camera move in the game.
-// Owner: ACTORS.
+// Owner: CINEMA (v2; v1 by ACTORS).
 //
-//   const dir = createDirector(THREE, camera, { parkId, bats })
-//   dir.setMode('title'|'select'|'batting'|'follow'|'homer'|'result', opts)
+//   const dir = createDirector(THREE, camera, { parkId, bats, occluders })
+//   dir.setMode('title'|'select'|'batting'|'follow'|'homer'|'result'
+//               |'outOfPark'|'wave'|'booth', opts)
+//     'outOfPark' { result, landmarks?, parkId?, onCue?(name, info) }  — multi-shot sequence:
+//         CHASE (trail the ball over the ivy / bleachers) → CATCH (street / rooftop / lot level,
+//         slow-mo as it comes over the back row, ballhawks, impact) → WIDE (reverse angle back
+//         at the park). Cues: 'overTheWall', 'overTheTop', 'landing', 'reverse'.
+//     'wave'      { fromSpray, dur=2.6 }   sweeping crowd pan across the bowl
+//     'booth'     { pos, look }            3D push-in on the press-level booth windows
+//     'batting'   { override?:{pos,look,fov} }   sideways-batter broadcast framing
 //   dir.follow(result)   // == setMode('follow', { result })
 //   dir.shake(amount)    // 0..1 trauma (0.6 = sweet contact)
-//   dir.update(dt, t)    // writes camera.position / quaternion / fov
+//   dir.pitchProgress(u) // optional: u = pitch time / flight time while the pitch is live (push-in), null after
+//   dir.timeScale        // suggested game-clock multiplier for the current shot (slow-mo moments; 1 = none)
+//   dir.shotName         // e.g. 'oop:catch'
+//   dir.update(dt, t)    // writes camera.position / quaternion / fov (+ cinemaPost letterbox/slowmo)
 //   dir.resize(aspect)   dir.fovFor(aspect) → vertical fov (deg) of the batting cam
 //
 // Ball tracking: actors.js publishes the live ball position into `ballTrack`
@@ -21,6 +32,12 @@ import { fenceDistance, surfaceHeight, scoreboardDistance, PARKS } from './data.
 
 /** Live ball state shared by actors.js → camera.js (single game instance). */
 export const ballTrack = { x: 0, y: 3, z: -1.2, tau: 0, live: false, landed: false, seq: 0, stamp: 0 };
+/**
+ * Live cinematic post state shared by camera.js → render.js (single game instance).
+ * letterbox 0..0.3 (fraction of half-height covered by each bar), slowmo 0..1 (replay tint),
+ * flash / aberr 0..1 impact punches, exposure multiplier, bloomBoost 0..1.
+ */
+export const cinemaPost = { letterbox: 0, slowmo: 0, flash: 0, aberr: 0, exposure: 1, bloomBoost: 0 };
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -185,6 +202,7 @@ export function createDirector(THREE, camera, { parkId = 'wrigley', bats = 'R', 
   let trauma = 0, time = 0;
   let occ = occluders ? occluderGrid(THREE, occluders) : null;
   let lastPick = null;
+  let lastDt = 1 / 60, HTS = 1;
 
   // pose state
   const out = { pos: V().copy(camera.position), look: V(), fov: camera.fov || 50 };
@@ -218,18 +236,36 @@ export function createDirector(THREE, camera, { parkId = 'wrigley', bats = 'R', 
   // 0 = tall portrait … 1 = wide landscape
   const shapeK = () => smooth(0.55, 1.7, aspect);
 
+  // Broadcast "high home" batting cam for the SIDEWAYS batter (RHB on −X facing +X, lefty
+  // mirrored): behind the plate and off the batter's back shoulder, high enough that the pitch
+  // lane clears his helmet. The batter reads large in the lower third (his back + closed front
+  // shoulder), the pitch lane and plate sit just inside him, and the top of frame carries the
+  // pitcher, the infield, the wall and the park's signature structures (Wrigley scoreboard +
+  // rooftops / Rate board + pinwheels). Landscape pulls back and centres.
+  // FRAMING can be tuned live: dir.framing = { portrait:{...}, landscape:{...} }.
+  const FRAMING = {
+    portrait:  { x: 4.0, y: 12.0, z: 17.6, lx: 1.2, ly: -5.4, fovAdd: 0 },
+    landscape: { x: 1.5, y: 10.4, z: 27.0, lx: 1.6, ly: 1.2, fovAdd: 0 },
+  };
+  const PT = { u: null, push: 0, lastU: null };
   function battingPose(o, t) {
     const k = shapeK();
-    // High catcher cam behind the batter's back shoulder. High enough that the
-    // pitch lane passes well clear of the helmet; landscape pulls back + inside.
-    o.pos.set(sgn * lerp(3.4, 0.9, k), lerp(13.2, 10.2, k), lerp(18, 26, k));
-    o.look.set(-sgn * lerp(0.9, 1.5, k), lerp(-8, 2.4, k), -60);
-    o.fov = fovFor(aspect);
-    // idle drift (subtle handheld breathing)
+    const A = FRAMING.portrait, B = FRAMING.landscape;
+    o.pos.set(sgn * lerp(A.x, B.x, k), lerp(A.y, B.y, k), lerp(A.z, B.z, k));
+    o.look.set(-sgn * lerp(A.lx, B.lx, k), lerp(A.ly, B.ly, k), -60);
+    o.fov = fovFor(aspect) + lerp(A.fovAdd, B.fovAdd, k);
+    // idle life: slow breathing handheld drift (two incommensurate sines per axis)
     o.pos.x += Math.sin(t * 0.21) * 0.10 + Math.sin(t * 0.53) * 0.03;
-    o.pos.y += Math.sin(t * 0.17 + 1.3) * 0.07;
+    o.pos.y += Math.sin(t * 0.17 + 1.3) * 0.07 + Math.sin(t * 0.61) * 0.02;
     o.look.x += Math.sin(t * 0.13 + 0.4) * 0.22;
     o.look.y += Math.sin(t * 0.19) * 0.12;
+    // pitch-tracking push: an operator leaning in as the ball comes (≈1.4° tighter, look eases
+    // a touch toward the plate), released after the pitch.
+    const want = PT.u == null ? 0 : smooth(0.05, 0.9, PT.u);
+    PT.push += (want - PT.push) * (1 - Math.exp(-lastDt * (PT.u == null ? 2.2 : 4.5)));
+    o.fov -= 1.4 * PT.push;
+    o.look.y -= 0.8 * PT.push * (1 - k);
+    o.pos.z -= 0.6 * PT.push;
     if (opts.override) applyOverride(o);
   }
   function applyOverride(o) {
@@ -571,11 +607,317 @@ export function createDirector(THREE, camera, { parkId = 'wrigley', bats = 'R', 
     keepInFrame(o, B, 0.8);
   }
 
+  // ============================================================ OUT OF THE PARK
+  // Three broadcast shots cut together on the ball's own clock (ballTrack.tau), each
+  // placement validated against the occluder grid + the analytic park surface:
+  //   CHASE  trail the ball (behind + above + off-axis) over the ivy and the bleachers
+  //   CATCH  beyond the bleachers at street / rooftop / parking-lot level, looking back up
+  //          as the ball clears the back row (slow-mo), then down to the bounce (impact)
+  //   WIDE   high reverse angle from beyond the landing back at the ballpark (identifiable:
+  //          bleachers, scoreboard / big board, light towers, rooftops) while the booth calls it
+  const O = {
+    on: false, stage: '', stageT: 0, stageReal: 0, cut: false, kind: 'street', tFence: 0, tBack: 0, tLand: 0, tEnd: 0, tDrop: 0,
+    rBack: 0, fr: 400, chase: { d: 58, h: 20, s: 12 }, catchPos: V(), widePos: V(), wideLook: V(), side: 1, ts: 1, slowAcc: 0,
+    cued: {}, landedAt: -1, plan: {}, lb: 0, restSeen: false, planned: null, plannedTau: 0, tSee: 0,
+  };
+  const _qa1 = V(), _qb1 = V(), _qc1 = V(), _qd1 = V(), _qe1 = V();
+  const polar = (out, sprayDeg, r, y) => { const s = sprayDeg * DEG; return out.set(Math.sin(s) * r, y, -Math.cos(s) * r); };
+  const sprayOf = v => Math.atan2(v.x, -v.z) / DEG;
+  const radOf = v => Math.hypot(v.x, v.z);
+  /** analytic resting surface (data.js) incl. the area beyond the foul lines (0) */
+  function surfAt(x, z) {
+    if (z > 0) return 0;
+    const s = Math.atan2(x, -z) / DEG; if (Math.abs(s) > 47) return 0;
+    return surfaceHeight(parkId, clamp(s, -45, 45), Math.hypot(x, z));
+  }
+  function tauAtRadius(R) {
+    const pts = F.pts; if (!pts) return F.landT;
+    for (let i = 0; i < F.n; i++) { const o = i * 4; if (Math.hypot(pts[o + 1], pts[o + 3]) >= R) return pts[o]; }
+    return F.landT;
+  }
+  function tauDropBelow(y, after) {       // first tau after `after`, descending, with ball.y < y
+    const pts = F.pts; if (!pts) return F.landT;
+    for (let i = 1; i < F.n; i++) { const o = i * 4; if (pts[o] > after && pts[o + 2] < y && pts[o + 2] < pts[o - 2]) return pts[o]; }
+    return F.landT;
+  }
+  /** clear of geometry: above the surface and nothing within `r` along the 6 axes (+ up to 30) */
+  function clearAt(p, r = 5) {
+    if (p.y < surfAt(p.x, p.z) + 3.5) return false;
+    if (!occ || !occ.ready) return true;
+    if (occ.raycast(p.x, p.y, p.z, 0, 1, 0, 12) < Infinity) return false;            // tucked under a deck / board / roof
+    const D = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0]];
+    for (const d of D) if (occ.raycast(p.x, p.y, p.z, d[0], d[1], d[2], r) < Infinity) return false;
+    return true;
+  }
+  /** line of sight a → b (ignores the last `slack` ft) */
+  function los(a, b, slack = 2.5) {
+    if (!occ || !occ.ready) return true;
+    tv.subVectors(b, a); const d = tv.length(); if (d < 1) return true; tv.divideScalar(d);
+    return occ.raycast(a.x, a.y, a.z, tv.x, tv.y, tv.z, d - slack) === Infinity && modelHitT(a.x, a.y, a.z, tv.x, tv.y, tv.z, d - slack, 4) === Infinity;
+  }
+  /** how cluttered / blocked a view is: structure in the lens + a blocked centre line */
+  function viewPenalty(p, look, fov) {
+    if (!occ || !occ.ready) return 0;
+    _pf.subVectors(look, p); const d = Math.max(1, _pf.length()); _pf.divideScalar(d);
+    _pr.crossVectors(_pf, up); if (_pr.lengthSq() < 1e-6) _pr.set(1, 0, 0); _pr.normalize(); _pu.crossVectors(_pr, _pf);
+    const tv2 = Math.tan((fov * DEG) / 2), th2 = tv2 * aspect;
+    let pen = 0, cover = 0;
+    const lim = Math.min(0.5 * d, 160);
+    for (let iy = 0; iy < 4; iy++) for (let ix = 0; ix < 5; ix++) {
+      tv.copy(_pf).addScaledVector(_pr, (-0.8 + ix * 0.4) * th2).addScaledVector(_pu, (-0.75 + iy * 0.5) * tv2).normalize();
+      const t = occ.raycast(p.x, p.y, p.z, tv.x, tv.y, tv.z, lim);
+      if (t < 45) pen += (1 - t / 45) * 0.3;               // something big right in front of the lens
+      if (t < lim && tv.y > -0.25) cover++;                // foreground mass between us and the subject (ground excluded)
+    }
+    const fc = cover / 20;
+    if (fc > 0.3) pen += 4 * (fc - 0.3);
+    const hit = occ.raycast(p.x, p.y, p.z, _pf.x, _pf.y, _pf.z, Math.min(d, 400));
+    if (hit < 70) pen += 2 * (1 - hit / 70) + 0.5;
+    return pen;
+  }
+  function flightDir(tau, outV) {        // horizontal unit direction of travel at tau
+    sampleAt(tau, _qa1); sampleAt(tau + 0.12, _qb1);
+    outV.set(_qb1.x - _qa1.x, 0, _qb1.z - _qa1.z);
+    if (outV.lengthSq() < 1e-6) outV.set(F.land.x - F.start.x, 0, F.land.z - F.start.z);
+    return outV.normalize();
+  }
+  function chasePos(tau, B, c, outV) {   // camera for the chase at ball position B
+    flightDir(tau, _qc1);
+    _qd1.set(-_qc1.z, 0, _qc1.x);           // right of travel
+    outV.copy(B).addScaledVector(_qc1, -c.d).addScaledVector(_qd1, c.s * O.side);
+    outV.y = B.y + c.h;
+    const floor = surfAt(outV.x, outV.z) + 14; if (outV.y < floor) outV.y = floor;
+    return outV;
+  }
+  function planChase(tau0) {
+    const opts2 = [{ d: 62, h: 9, s: 15 }, { d: 58, h: 16, s: -16 }, { d: 66, h: 26, s: 18 }, { d: 72, h: 40, s: -12 }, { d: 84, h: 64, s: 0 }];
+    const t1 = Math.max(tau0 + 0.1, O.tBack);
+    let best = opts2[opts2.length - 1], bestBad = 1e9;
+    for (const c of opts2) {
+      let bad = 0, prev = null;
+      for (let i = 0; i <= 10; i++) {
+        const tau = lerp(tau0, t1, i / 10); sampleAt(tau, _qe1);
+        const p = chasePos(tau, _qe1, c, V());
+        if (!clearAt(p, 4)) bad += 3;
+        if (!los(p, _qe1, 1.5)) bad += 1;
+        if (prev && occ && occ.ready) { tv.subVectors(p, prev); const d = tv.length(); if (d > 0.5) { tv.divideScalar(d); if (occ.raycast(prev.x, prev.y, prev.z, tv.x, tv.y, tv.z, d) < Infinity) bad += 4; } }
+        prev = p;
+      }
+      if (bad < bestBad) { bestBad = bad; best = c; }
+      if (bad === 0) break;
+    }
+    O.chase = { ...best }; O.plan.chase = { ...best, bad: bestBad };
+  }
+  function planCatch() {
+    const L = F.land, s = clamp(sprayOf(L), -60, 60) * DEG;
+    const out = V().set(Math.sin(s), 0, -Math.cos(s)), tan = V().set(Math.cos(s), 0, Math.sin(s));
+    const roofY = (P.rooftops ? P.rooftops.h : 40) + 8;
+    sampleAt(O.tBack, _qa1); const overTop = _qa1.clone();
+    sampleAt(lerp(O.tBack, O.tLand, 0.55), _qb1); const mid = _qb1.clone();
+    sampleAt(Math.max(0, O.tLand - 0.25), _qc1); const late = _qc1.clone();
+    const tgtL = L.clone(); tgtL.y += 2.5;
+    const toPark = V().subVectors(overTop, L).setY(0).normalize();     // where the ball comes in from
+    const cands = [];
+    // along the street / roof row (both ways), a little toward the far curb, eye level over the ballhawks;
+    // plus a couple of looser "across" angles as fallbacks
+    // ring radius of the lane the camera should stand in at spray `sd` (street centre / roof row / lot)
+    const laneR = sd => {
+      const fr = fenceDistance(parkId, clamp(sd, -45, 45)), b = fr + P.stands.depth;
+      if (O.kind === 'roof') return b + P.street.width + (P.rooftops ? P.rooftops.depth * 0.3 : 20);
+      if (O.kind === 'lot') return Math.max(radOf(L), b + P.street.width + 30);
+      return b + P.street.width * 0.5;
+    };
+    const sL = sprayOf(L), rLand = radOf(L);
+    for (const [lat, off, dist, hy] of [[1, 4, 118, 9], [-1, 4, 118, 9], [1, 0, 150, 11], [-1, 0, 150, 11], [1, 8, 92, 8], [-1, 8, 92, 8],
+      [1, -6, 130, 14], [-1, -6, 130, 14], [0.5, 0, 110, 16], [-0.5, 0, 110, 16], [1, 0, 180, 18], [-1, 0, 180, 18]]) {
+      const sd = sL + lat * (dist / Math.max(rLand, 200)) / DEG;           // arc-length offset along the lane
+      const r = laneR(sd) + off;
+      const p = V(); polar(p, sd, r, 0);
+      if (Math.abs(lat) < 1) p.addScaledVector(out, 25);
+      p.y = O.kind === 'roof' ? Math.max(roofY, surfAt(p.x, p.z) + 6) : surfAt(p.x, p.z) + hy;
+      cands.push({ p, lat, fwd: off, dist, extra: 0 });
+      if (Math.abs(lat) >= 1 && dist <= 150) { const q = p.clone(); q.y += 38; cands.push({ p: q, lat, fwd: off, dist, extra: 0.9 }); }   // "cherry-picker" height
+    }
+    let best = null;
+    const dbg = [];
+    for (const c of cands) {
+      let sc = 0; const why = [];
+      if (!clearAt(c.p, 4)) { c.score = 1e3; dbg.push([c.p.toArray().map(Math.round), 'X']); continue; }
+      if (!los(c.p, tgtL)) { sc += 4; why.push('L'); }
+      let vis = 0;
+      for (let i = 0; i < 7; i++) { sampleAt(lerp(O.tBack - 0.15, O.tLand - 0.05, i / 6), _qe1); if (los(c.p, _qe1, 1)) vis++; }
+      sc += 6 * (1 - vis / 7); if (vis < 7) why.push('v' + vis);
+      // framing: the fall (overTop → landing) should fit a sane lens from here
+      fitPts[0].copy(overTop); fitPts[1].copy(tgtL); fitPts[2].copy(mid); fitPts[3].copy(late);
+      _qd1.copy(mid).lerp(tgtL, 0.5);
+      const need = fitFov(c.p, _qd1, fitPts, 1.2);
+      if (need > 75) { sc += 2; why.push('F'); } else if (need > 62) { sc += 0.6; why.push('f'); }
+      const v1 = viewPenalty(c.p, _qd1, clamp(need, 36, 70)); sc += v1;
+      _qe1.copy(overTop).lerp(mid, 0.5); const v2 = 0.5 * viewPenalty(c.p, _qe1, 50); sc += v2;
+      // the ball should come in across / toward the lens, not straight away from it
+      tv.subVectors(c.p, L).setY(0).normalize();
+      sc += 0.6 * clamp(-tv.dot(toPark), 0, 1);
+      c.score = sc + c.dist * 0.001 + (c.extra || 0);
+      dbg.push([c.p.toArray().map(Math.round), +c.score.toFixed(2), why.join('') + ' v' + v1.toFixed(1) + '/' + v2.toFixed(1)]);
+      if (!best || c.score < best.score) best = c;
+    }
+    O.plan.catchCands = dbg;
+    if (!best || best.score >= 1e3) { const p = V().copy(L).addScaledVector(tan, 110); p.y = Math.max(O.kind === 'roof' ? roofY : 0, surfAt(p.x, p.z)) + 10; best = { p, score: 99, lat: 1 }; }
+    O.catchPos.copy(best.p); O.plan.catch = { pos: best.p.toArray().map(Math.round), score: +best.score.toFixed(2) };
+    O.tSee = O.tLand;
+    for (let tt = O.tBack - 0.3; tt < O.tLand; tt += 0.05) { sampleAt(tt, _qe1); if (los(best.p, _qe1, 1)) { O.tSee = tt; break; } }
+    O.side = best.lat != null && best.lat < 0 ? -1 : 1;
+  }
+  function planWide() {
+    const L = F.land, s = clamp(sprayOf(L), -60, 60) * DEG;
+    const out = V().set(Math.sin(s), 0, -Math.cos(s)), tan = V().set(Math.cos(s), 0, Math.sin(s));
+    const look = V(); polar(look, clamp(sprayOf(L) * 0.6, -30, 30), O.fr * 0.55, 18);
+    look.lerp(L, 0.25);
+    let best = null;
+    for (const [lat, fwd, h] of [[0.6, 90, 165], [-0.6, 90, 165], [1, 60, 135], [-1, 60, 135], [0.35, 140, 200], [-0.35, 140, 200], [1, 30, 110], [-1, 30, 110], [0, 190, 240]]) {
+      const p = V().copy(L).addScaledVector(tan, lat * 70 * O.side).addScaledVector(out, fwd);
+      p.y = Math.max(h, surfAt(p.x, p.z) + 30);
+      let sc = 0;
+      if (!clearAt(p, 6)) continue;
+      if (!los(p, L)) sc += 3;
+      if (!los(p, look)) sc += 1.2;
+      polar(_qa1, 0, O.fr * 0.45, 4); if (!los(p, _qa1)) sc += 0.8;       // a slice of the infield: it's the ballpark
+      sc += Math.abs(lat) < 0.2 ? 0.4 : 0;                                  // edge-on arc reads as a line
+      sc += viewPenalty(p, look, 52);
+      sc += fwd * 0.002;
+      if (!best || sc < best.sc) best = { p, sc };
+    }
+    if (!best) { const p = V().copy(L).addScaledVector(out, 60); p.y = 140; best = { p, sc: 99 }; }
+    O.widePos.copy(best.p); O.wideLook.copy(look);
+    O.plan.wide = { pos: best.p.toArray().map(Math.round), score: +best.sc.toFixed(2) };
+  }
+  /** the expensive part (occluder raycasts, ~5-20 ms): done at contact, inside the hit-stop, when possible */
+  function planOOP(res, tauEst) {
+    if (occ && !occ.ready) { let g = 0; while (!occ.step(1e9) && g++ < 10); }
+    const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
+    O.plan = {};
+    const bonus = res?.bonus || null;
+    O.kind = parkId === 'rate' ? 'lot' : bonus === 'rooftop' ? 'roof' : bonus === 'over_cf' ? 'board' : 'street';
+    const sL = clamp(F.spray, -45, 45);
+    O.fr = fenceDistance(parkId, sL);
+    O.rBack = O.fr + P.stands.depth;
+    O.tFence = res?.path?.fenceT ?? tauAtRadius(O.fr);
+    O.tBack = Math.min(tauAtRadius(O.rBack), F.landT - 0.2);
+    O.tLand = F.landT; O.tEnd = F.endT;
+    O.tDrop = Math.min(O.tLand - 0.45, Math.max(O.tBack + 0.5, tauDropBelow((parkId === 'rate' ? 60 : P.stands.topH + 22), (O.tBack + O.tLand) * 0.5 - 0.5)));
+    O.side = F.spray >= 0 ? -1 : 1;
+    planCatch();
+    planChase(Math.max(0, tauEst));
+    planWide();
+    O.plan.ms = +(((typeof performance !== 'undefined' ? performance.now() : 0) - t0)).toFixed(1);
+    O.plan.kind = O.kind;
+    O.planned = res; O.plannedTau = tauEst;
+  }
+  function initOOP() {
+    const res = opts.result || F.result;
+    if (res && res !== F.result) initFollow(res);
+    if (opts.occluders && opts.occluders !== occluders && !occ) occ = occluderGrid(THREE, opts.occluders);
+    O.on = true; O.cued = {}; O.landedAt = -1; O.slowAcc = 0; O.ts = 1; O.restSeen = false;
+    const tau = ballTrack.live && ballTrack.stamp !== F.stamp0 ? ballTrack.tau : F.clock;
+    if (O.planned !== res || Math.abs(O.plannedTau - tau) > 0.8) planOOP(res, tau);
+    else O.plan.cached = true;
+    O.plan.t = { see: +O.tSee.toFixed(2), fence: +O.tFence.toFixed(2), back: +O.tBack.toFixed(2), drop: +O.tDrop.toFixed(2), land: +O.tLand.toFixed(2), end: +O.tEnd.toFixed(2), now: +tau.toFixed(2) };
+    O.stage = '';
+    goStage(tau < Math.max(O.tBack - 0.6, O.tSee - 0.5) ? 'chase' : 'catch', false);
+  }
+  function goStage(st, cut = true) {
+    if (O.stage === st) return;
+    O.stage = st; O.stageT = 0; O.stageReal = 0; O.cut = cut;
+    if (st === 'catch') cue('overTheTop');
+    if (st === 'wide') cue('reverse');
+  }
+  function cue(name, info) {
+    if (O.cued[name]) return; O.cued[name] = true;
+    try { opts.onCue && opts.onCue(name, info || { stage: O.stage, kind: O.kind, landing: F.land.toArray() }); } catch (e) { console.warn('[camera] onCue', e); }
+  }
+  function oopPose(o, t, dt) {
+    const B = currentBall(dt);
+    const tau = F.clock;
+    O.stageT += dt; O.stageReal += dt;
+    if (tau >= O.tFence) cue('overTheWall');
+    // ---- stage transitions
+    if (O.stage === 'chase' && tau >= Math.min(O.tLand - 0.5, Math.max(O.tBack - 0.18, O.tSee - 0.06))) goStage('catch');
+    if (O.stage === 'catch') {
+      if (O.landedAt < 0 && tau >= O.tLand - 0.02) { O.landedAt = O.stageReal; cue('landing', { stage: 'catch', kind: O.kind, landing: F.land.toArray() }); cinemaPost.flash = Math.max(cinemaPost.flash, 0.18); cinemaPost.aberr = Math.max(cinemaPost.aberr, 0.8); trauma = Math.min(1, trauma + 0.35); }
+      const settled = ballTrack.landed && ballTrack.stamp === O.lastStamp; O.lastStamp = ballTrack.stamp;
+      if (O.landedAt >= 0 && (O.stageReal - O.landedAt > 1.35 || (settled && O.stageReal - O.landedAt > 0.8))) goStage('wide');
+      if (O.stageReal > 9) goStage('wide');
+    }
+    // ---- time-scale hint (slow-mo while the ball clears the back row, capped at 1.7 s real)
+    let ts = 1;
+    if (O.stage === 'chase') ts = tau > O.tBack - 0.9 ? 0.75 : 1;
+    else if (O.stage === 'catch' && O.landedAt < 0) {
+      if (tau < Math.max(O.tDrop, O.tSee + 0.45) && O.slowAcc < 1.7) { ts = 0.32; O.slowAcc += dt; }
+      else ts = tau < O.tLand ? 0.7 : 1;
+    }
+    O.ts += (ts - O.ts) * (1 - Math.exp(-dt * 7));
+    // ---- poses
+    const base = fovFor(aspect);
+    if (O.stage === 'chase') {
+      chasePos(tau, B, O.chase, o.pos);
+      flightDir(tau, _qc1);
+      // look ahead of the ball toward where it's going (the bleachers + street beyond)
+      o.look.copy(B).addScaledVector(_qc1, 150); o.look.y = Math.max(F.land.y + 10, B.y * 0.62 - 6);
+      fitPts[0].copy(B); fitPts[1].copy(B); fitPts[2].copy(F.land); fitPts[3].copy(F.land);
+      o.fov = clamp(fitFov(o.pos, o.look, fitPts, 1.2), base * 0.78, base + 8);
+    } else if (O.stage === 'catch') {
+      o.pos.copy(O.catchPos);
+      o.pos.x += Math.sin(t * 0.8) * 0.35; o.pos.y += Math.sin(t * 1.1) * 0.25;
+      // ball-first while it's in the air, then settle toward the landing / roll
+      const w = O.landedAt >= 0 ? 0.25 : smooth(O.tBack, O.tLand, tau) * 0.45;
+      o.look.copy(B).lerp(F.land, w);
+      fitPts[0].copy(B); fitPts[1].copy(F.land); fitPts[2].copy(F.land); fitPts[2].y += 8; fitPts[3].copy(B);
+      o.fov = clamp(fitFov(o.pos, o.look, fitPts, O.landedAt >= 0 ? 1.7 : 1.25), O.landedAt >= 0 ? 40 : 30, 70);
+    } else {
+      // wide reverse: slow push + drift, the park behind the resting ball
+      const u = Math.min(1, O.stageReal / 5);
+      o.pos.copy(O.widePos).lerp(O.wideLook, 0.1 * u);
+      o.pos.x += Math.sin(t * 0.25) * 3; o.pos.y += Math.sin(t * 0.3) * 1.5;
+      o.look.copy(O.wideLook).lerp(B, 0.18);
+      fitPts[0].copy(B); fitPts[1].copy(O.wideLook); fitPts[2].copy(F.land); fitPts[3].copy(O.wideLook);
+      o.fov = clamp(fitFov(o.pos, o.look, fitPts, 1.35), 34, 64);
+    }
+  }
+
+  // ============================================================ WAVE (crowd sweep)
+  function wavePose(o, t) {
+    const dur = opts.dur || 2.6;
+    const u = clamp(modeT / dur, 0, 1), e = u * u * (3 - 2 * u);
+    const dirS = (opts.fromSpray ?? 0) > 0 ? 1 : -1;        // start where the wave starts
+    const k = shapeK();
+    const a = lerp(dirS * 78, -dirS * 64, e) * DEG;           // 0 = behind home plate
+    const R = lerp(150, 175, k);
+    // camera over the infield grass, counter-arcing slightly for parallax
+    o.pos.set(-Math.sin(a) * 26, lerp(30, 36, k) + 4 * Math.sin(Math.PI * u), -112 - Math.cos(a) * 12);
+    o.look.set(Math.sin(a) * R, 26, Math.cos(a) * R * 0.78);
+    o.fov = clamp(fovFor(aspect) * lerp(0.92, 0.8, k), 34, 60);
+  }
+
+  // ============================================================ BOOTH push-in
+  function boothPose(o, t) {
+    const bp = opts.pos || (P.booth && P.booth.pos) || [0, 50, 92];
+    const bl = opts.look || (P.booth && P.booth.look) || [0, 10, -60];
+    _qa1.set(bp[0], bp[1], bp[2]); _qb1.set(bl[0], bl[1], bl[2]).sub(_qa1).setY(0).normalize();
+    const u = clamp(modeT / (opts.dur || 2.4), 0, 1), e = 1 - Math.pow(1 - u, 3);
+    const d = lerp(115, 44, e);
+    o.pos.copy(_qa1).addScaledVector(_qb1, d);
+    o.pos.x += lerp(18, 3, e) * (sgn > 0 ? -1 : 1);
+    o.pos.y = _qa1.y + lerp(4, 0.5, e) + Math.sin(t * 1.2) * 0.2;
+    o.look.copy(_qa1); o.look.y += 1.5;
+    o.fov = lerp(44, 33, e);
+  }
+
   // ------------------------------------------------------------ API
   function setMode(m, o = {}) {
-    if (!['title', 'select', 'batting', 'follow', 'homer', 'result'].includes(m)) m = 'batting';
+    if (!['title', 'select', 'batting', 'follow', 'homer', 'result', 'outOfPark', 'wave', 'booth'].includes(m)) m = 'batting';
     const prev = mode;
     mode = m; opts = o || {}; modeT = 0;
+    if (m !== 'outOfPark') { O.on = false; O.ts = 1; }
     from.pos.copy(out.pos); from.look.copy(out.look); from.fov = out.fov;
     smInit = false; blend = 0; arcH = 0; orbit.on = false;
     switch (m) {
@@ -584,6 +926,10 @@ export function createDirector(THREE, camera, { parkId = 'wrigley', bats = 'R', 
       case 'batting': blendDur = (prev === 'follow' || prev === 'homer') ? 1.0 : prev === 'batting' ? 0.5 : 1.5; rates.pos = 5; rates.look = 5; break;
       case 'follow':
         if (o.result) initFollow(o.result);
+        // out of the park: pre-plan the whole sequence now (contact / hit-stop) instead of mid-flight
+        if (o.result && o.result.outOfPark && o.result.path && o.result.path.pts) {
+          try { const fT = o.result.path.fenceT ?? F.landT * 0.7; planOOP(o.result, Math.max(0.9, fT - 1.3)); } catch (e) { console.warn('[camera] oop plan', e); }
+        }
         blendDur = 0.55; rates.pos = 6; rates.look = F.kind === 'foul' ? 3.5 : 12; rates.fov = 4; break;
       case 'homer':
         if (o.result && o.result !== F.result) initFollow(o.result);
@@ -591,6 +937,11 @@ export function createDirector(THREE, camera, { parkId = 'wrigley', bats = 'R', 
         orbit.on = true; orbit.a.subVectors(out.pos, F.ball); orbit.d0 = orbit.a.length(); orbit.a.normalize();
         blendDur = shot === 'reverse' ? 0.95 : 0.95; rates.pos = 8; rates.look = 16; rates.fov = 6; break;
       case 'result': blendDur = 2.0; rates.pos = 2; rates.look = 2; break;
+      case 'outOfPark':
+        initOOP();
+        blendDur = prev === 'follow' || prev === 'homer' ? 0.6 : 0.001; rates.pos = 9; rates.look = 14; rates.fov = 6; break;
+      case 'wave': blendDur = prev === 'batting' ? 0.45 : 0.3; rates.pos = 6; rates.look = 6; rates.fov = 4; break;
+      case 'booth': blendDur = 0.001; rates.pos = 5; rates.look = 8; rates.fov = 4; break;
       default: break;
     }
     if (opts.instant) blendDur = 0.001;
@@ -607,17 +958,24 @@ export function createDirector(THREE, camera, { parkId = 'wrigley', bats = 'R', 
       case 'follow': followPose(raw, t, dt); break;
       case 'homer': homerPose(raw, t, dt); break;
       case 'result': resultPose(raw, t); break;
+      case 'outOfPark': oopPose(raw, t, dt); break;
+      case 'wave': wavePose(raw, t); break;
+      case 'booth': boothPose(raw, t); break;
       default: battingPose(raw, t);
     }
   }
 
   const shakeOff = V(), right = V(), camUp = V();
   function update(dt = 1 / 60, t) {
-    dt = clamp(dt, 0, 0.1);
+    dt = clamp(dt, 0, 0.1); lastDt = Math.max(dt, 1e-4);
     if (occ && !occ.ready) occ.step(5000);
     time = t != null ? t : time + dt;
     modeT += dt;
     computeRaw(time, dt);
+    if (O.on && O.cut) {   // hard broadcast cut inside the out-of-park sequence
+      O.cut = false; smInit = false; blend = 1; orbit.on = false; arcH = 0;
+      from.pos.copy(raw.pos); from.look.copy(raw.look); from.fov = raw.fov;
+    }
     if (!smInit) { sm.pos.copy(raw.pos); sm.look.copy(raw.look); sm.fov = raw.fov; smInit = true; }
     else {
       sm.pos.lerp(raw.pos, 1 - Math.exp(-dt * rates.pos));
@@ -648,6 +1006,21 @@ export function createDirector(THREE, camera, { parkId = 'wrigley', bats = 'R', 
       out.fov = lerp(from.fov, sm.fov, k);
     }
     if ((mode === 'follow' || mode === 'homer') && F.pts) keepInFrame(out, F.ball, F.kind === 'foul' ? 0.94 : 0.86);
+    if (mode === 'outOfPark' && F.pts && O.stage !== 'wide') keepInFrame(out, F.ball, O.stage === 'chase' ? 0.7 : 0.8);
+    // never let a blend or drift carry the lens into the park surface
+    { const floor = surfAt(out.pos.x, out.pos.z) + 2.5; if (out.pos.y < floor) out.pos.y = floor; }
+    // cinematic post: letterbox for the big moments, replay tint while slowed, impact punches decay
+    const lbT = mode === 'outOfPark' ? (aspect < 1 ? 0.07 : 0.1) : 0;
+    O.lb += (lbT - O.lb) * (1 - Math.exp(-dt * (lbT > O.lb ? 5 : 3)));
+    cinemaPost.letterbox = O.lb < 0.002 ? 0 : O.lb;
+    cinemaPost.slowmo = mode === 'outOfPark' ? clamp((1 - O.ts) / 0.68, 0, 1) : 0;
+    cinemaPost.flash = Math.max(0, cinemaPost.flash - dt * 2.5);
+    cinemaPost.aberr = Math.max(0, cinemaPost.aberr - dt * 1.8);
+    cinemaPost.bloomBoost = mode === 'outOfPark' ? 0.6 : mode === 'homer' ? 0.35 : 0;
+    // regular homers: a short breath of slow motion as the ball clears the wall
+    { const fT = F.result && F.result.path ? F.result.path.fenceT : null;
+      const want = mode === 'homer' && fT != null && Math.abs(F.clock - fT) < 0.28 ? 0.7 : 1;
+      HTS += (want - HTS) * (1 - Math.exp(-dt * 8)); }
 
     camera.position.copy(out.pos);
     camera.up.copy(up);
@@ -680,6 +1053,12 @@ export function createDirector(THREE, camera, { parkId = 'wrigley', bats = 'R', 
 
   return {
     setMode, follow, shake, update, resize, fovFor,
+    /** u = pitch time / flight time while the pitch is live; null/undefined when it isn't */
+    pitchProgress(u) { PT.u = u == null || !isFinite(u) ? null : u; },
+    get timeScale() { return mode === 'outOfPark' ? O.ts : mode === 'homer' ? HTS : 1; },
+    get shotName() { return mode === 'outOfPark' ? 'oop:' + O.stage : mode === 'homer' ? 'homer:' + shot : mode; },
+    get oopPlan() { return O.plan; },
+    framing: FRAMING,
     get mode() { return mode; }, get shot() { return shot; }, get pick() { return lastPick; }, __cand: () => cand.filter(c => c.name).map(c => [c.name, +(c.field ?? -1).toFixed(1), +c.clutter.toFixed(2), c.occl, c.pos.toArray().map(Math.round)]), get occluderStats() { return occ ? (occ.ready ? occ.stats : 'building') : null; },
     /** debug: current pose */ get pose() { return { pos: out.pos.toArray(), look: out.look.toArray(), fov: out.fov }; },
     /** debug: raycast the occluders from pos toward look through a 7×4 grid (fov deg) */

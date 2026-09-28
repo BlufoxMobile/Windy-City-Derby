@@ -1,0 +1,30 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Booth harness</title>
+<style>html,body{margin:0;height:100%;background:#0a1a10;overflow:hidden;font-family:system-ui}
+#bg{position:fixed;inset:0;background:linear-gradient(180deg,#8fb8e8 0 35%,#3e7a33 35% 60%,#9a4636 60% 62%,#3e7a33 62%);}
+#ui{position:fixed;inset:0;pointer-events:none}
+#ctl{position:fixed;top:6px;left:6px;right:6px;display:flex;flex-wrap:wrap;gap:4px;z-index:20}
+#ctl button{font:600 11px system-ui;padding:6px 8px;border-radius:6px;border:0;background:#0b1630;color:#fff}
+</style></head><body><div id="bg"></div><div id="ui"></div><div id="ctl"></div>
+<script type="module">
+import { createBooth, pickLine } from '/src/booth.js';
+const q = new URLSearchParams(location.search);
+if (q.get('bg')) document.getElementById('bg').style.background = `center/cover url(${q.get('bg')})`;
+const booth = createBooth(document.getElementById('ui'), { base: '/assets/', autoPreload: false });
+window.booth = booth;
+const cases = [
+  ['waveland', { parkId: 'wrigley', bonus: 'street_l', distance: 468 }],
+  ['sheffield', { parkId: 'wrigley', bonus: 'street_r', distance: 452 }],
+  ['rooftop', { parkId: 'wrigley', bonus: 'rooftop', distance: 503 }],
+  ['scoreboard', { parkId: 'wrigley', bonus: 'over_cf', distance: 541 }],
+  ['monster', { parkId: 'wrigley', bonus: null, distance: 488 }],
+  ['b2b', { parkId: 'wrigley', streak: 2, distance: 431 }],
+  ['night', { parkId: 'wrigley', bonus: 'street_l', distance: 470, timeOfDay: 'night' }],
+  ['rate', { parkId: 'rate', bonus: 'out_of_park', distance: 512, name: 'Tester' }],
+  ['rate board', { parkId: 'rate', bonus: 'over_cf', distance: 530, name: 'Tester' }],
+];
+const ctl = document.getElementById('ctl');
+for (const [n, o] of cases) { const b = document.createElement('button'); b.textContent = n; b.onclick = () => booth.show({ name: 'Tester', ...o }).then(() => console.log('done', n)); ctl.appendChild(b); }
+window.cases = Object.fromEntries(cases);
+window.ready = booth.preload();
+</script></body></html>
